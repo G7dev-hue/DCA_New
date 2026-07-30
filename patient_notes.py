@@ -92,6 +92,7 @@ def late_dos_cigna(procedures: list, code: str) -> str:
 
 
 def late_dos_dd_ins_scraper(benefits_search: list, code: str) -> str:
+    raw_dates = []
     for entry in benefits_search:
         if entry.get("code", "").upper() == code.upper():
             for row in entry.get("rows", []):
@@ -100,16 +101,13 @@ def late_dos_dd_ins_scraper(benefits_search: list, code: str) -> str:
                 # whichever is present so older scraped files still work.
                 val = (row.get("service_date") or row.get("coverage_details") or "").strip()
                 if not val or val in ("None", "N/A", ""):
-                    return "NH"
-                first = val.split(",")[0].strip()
-                if not re.match(r"\d{1,2}/\d{1,2}/\d{2,4}", first):
-                    return "NH"
-                for fmt in ("%m/%d/%Y", "%m/%d/%y"):
-                    try:
-                        return datetime.strptime(first, fmt).strftime("%m/%d/%Y")
-                    except ValueError:
-                        continue
-    return "NH"
+                    continue
+                # A row can contain several comma-separated dates. Extract
+                # every date rather than retaining only val.split(",")[0].
+                raw_dates.extend(
+                    re.findall(r"\d{1,2}/\d{1,2}/\d{2,4}", val)
+                )
+    return _format_dates(raw_dates, ("%m/%d/%Y", "%m/%d/%y"))
 
 
 def late_dos_ddri(procedures: list, code: str) -> str:

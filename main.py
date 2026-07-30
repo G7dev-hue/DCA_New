@@ -369,6 +369,11 @@ def generate_new_plan(req: NewPlanRequest):
     )
 
 if __name__ == "__main__":
-    # host="0.0.0.0" makes the server reachable from other machines on the LAN
-    # (e.g. http://10.30.10.67:8000). Use 127.0.0.1 to restrict to this machine only.
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    # host="0.0.0.0" makes the server reachable from other machines on the LAN 
+    # # (e.g. http://10.30.10.67:8000). Use 127.0.0.1 to restrict to this machine only.
+    uvicorn.run(
+        "main:app",
+        host="0.0.0.0",
+        port=8000,
+        reload=True,
+    )

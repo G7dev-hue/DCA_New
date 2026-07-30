@@ -2,7 +2,7 @@
 new_plan.py
 -----------
 Generates an "Insurance Plan Breakdown – (New Plan)" PDF from the
-Portal JSON (metlife_data / benefit_coverage) and the Denticon JSON.
+MetLife or Cigna Portal JSON and the Denticon JSON.
 
 Includes:
   - LLM-based provision interpretation (Ollama, Claude fallback)
@@ -17,13 +17,16 @@ import io
 import re
 import json
 import requests
+from xml.sax.saxutils import escape
 from datetime import datetime
 
 from reportlab.pdfgen import canvas
+from reportlab.pdfbase.pdfmetrics import stringWidth
 from reportlab.lib.pagesizes import letter
 from reportlab.lib import colors
+from reportlab.lib.styles import ParagraphStyle
 from reportlab.lib.utils import simpleSplit
-from reportlab.platypus import Table, TableStyle
+from reportlab.platypus import Paragraph, Table, TableStyle
 
 # ─── Page geometry ─────────────────────────────────────────────────────────────
 W, H     = letter          # 612 × 792 pt
@@ -483,9 +486,12 @@ def _parse_notes(s):
 
 
 def _covered_pct(services, *category_hints):
-    for svc in services:
-        cat = svc.get('category', '').upper()
-        if any(h in cat for h in category_hints):
+    # Respect caller priority (for example RESTORATIVE before DIAGNOSTIC).
+    for hint in category_hints:
+        for svc in services:
+            cat = svc.get('category', '').upper()
+            if hint not in cat:
+                continue
             m = re.search(r'(\d+%)', svc.get('in_network', ''))
             if m:
                 return m.group(1)
@@ -587,6 +593,96 @@ def _extract_missing_tooth_text(provisions):
     return ''
 
 
+def _extract_dependent_age_limit(provisions):
+    """Read the non-orthodontic dependent age limit from Portal provisions."""
+    for p in provisions or []:
+        rule = str(p.get('rule', '')).lower()
+        if 'maximum child age' not in rule and 'maximum age' not in rule:
+            continue
+        if 'orthodont' in rule:
+            continue
+        m = re.search(r'(?:child\s*:?\s*)?(\d+)', str(p.get('value', '')), re.IGNORECASE)
+        if m:
+            return m.group(1)
+    return '—'
+
+
+def _deductible_applies(services, *category_hints):
+    """Return Yes/No from Portal covered_services.in_network text."""
+    for svc in services or []:
+        cat = str(svc.get('category', '')).upper()
+        if not any(h in cat for h in category_hints):
+            continue
+        text = str(svc.get('in_network', ''))
+        m = re.search(r'Deductible\s+Applies\s*:\s*(Yes|No)', text, re.IGNORECASE)
+        if m:
+            return m.group(1).title()
+        if re.search(r'Deductible\s+Not\s+Applies', text, re.IGNORECASE):
+            return 'No'
+    return '—'
+
+
+def _number_of_quads_d4341(procs):
+    """Read D4341 quadrant count from Portal procedure data only."""
+    p = procs.get('D4341', {})
+    if not p:
+        return '—'
+
+    for key in (
+        'number_of_quads', 'number_of_quadrants', 'quadrants',
+        'quad_limit', 'quadrant_limit', 'quads_allowed',
+    ):
+        value = p.get(key)
+        if value not in (None, '', '—'):
+            m = re.search(r'\d+', str(value))
+            return m.group(0) if m else str(value).strip()
+
+    searchable = ' '.join(str(p.get(k, '')) for k in (
+        'frequency_limit', 'description', 'limitations', 'notes',
+    ))
+    for pattern in (
+        r'(\d+)\s*(?:QUADS?|QUADRANTS?)\s+ALLOWED',
+        r'(?:LIMIT(?:ED)?\s+TO\s+)?(\d+)\s*(?:QUADS?|QUADRANTS?)',
+        r'(?:QUADS?|QUADRANTS?)\s*[:=-]?\s*(\d+)',
+    ):
+        m = re.search(pattern, searchable, re.IGNORECASE)
+        if m:
+            return m.group(1)
+    return '—'
+
+
+def _cigna_molars_only_sealants(procs):
+    p = (procs or {}).get('D1351') or {}
+    groups = ((p.get('api_details') or {}).get('context_groups') or [])
+    if not groups:
+        return '-'
+
+    molars = {'1', '2', '3', '14', '15', '16', '17', '18', '19', '30', '31', '32'}
+    covered_molar = False
+    covered_non_molar = False
+    tested_non_molar = False
+
+    for group in groups:
+        covered = bool((group.get('outcome') or {}).get('covered'))
+        for context in group.get('contexts') or []:
+            tooth = str(context.get('tooth') or '').upper()
+            if not tooth or tooth == 'N/A':
+                continue
+            is_molar = tooth in molars
+            if is_molar and covered:
+                covered_molar = True
+            elif not is_molar:
+                tested_non_molar = True
+                if covered:
+                    covered_non_molar = True
+
+    if covered_non_molar:
+        return 'No'
+    if covered_molar and tested_non_molar:
+        return 'Yes'
+    return '-'
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 #  FIX #1 — Family Deductible logic
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -644,39 +740,683 @@ RELATION_MAP = {
 }
 
 
+def _is_cigna_portal(raw):
+    """Recognize the Cigna extension payload without affecting MetLife JSON."""
+    if not isinstance(raw, dict):
+        return False
+    source = str(raw.get('source', '')).lower()
+    return (
+        'cigna' in source or
+        (
+            isinstance(raw.get('procedures'), dict) and
+            isinstance(raw.get('procedures', {}).get('results'), list) and
+            isinstance(raw.get('coinsurance'), list) and
+            isinstance(raw.get('summary'), dict)
+        )
+    )
+
+
+def _cigna_plan_pct(member_pct):
+    """Convert Cigna member coinsurance into the plan-paid percentage."""
+    m = re.search(r'(\d+(?:\.\d+)?)\s*%', str(member_pct or ''))
+    if not m:
+        return ''
+    paid = max(0.0, min(100.0, 100.0 - float(m.group(1))))
+    return f'{paid:g}%'
+
+
+def _cigna_network_value(record, *keys):
+    for key in keys:
+        value = record.get(key) if isinstance(record, dict) else None
+        if value not in (None, '', 'N/A', 'NA'):
+            return str(value).strip()
+    return ''
+
+
+def _cigna_network_matches(record, selected_network):
+    """Match a Cigna record to plan_details.network without using OONET."""
+    if not isinstance(record, dict):
+        return False
+    selected_network = selected_network if isinstance(selected_network, dict) else {}
+    selected_name = _cigna_network_value(selected_network, 'name', 'networkName')
+    selected_id = _cigna_network_value(selected_network, 'id', 'networkId')
+    record_name = _cigna_network_value(record, 'networkName', 'network')
+    record_id = _cigna_network_value(record, 'networkId', 'network_id')
+
+    if selected_id:
+        return record_id.lower() == selected_id.lower()
+    if selected_name:
+        return record_name.lower() == selected_name.lower()
+    return False
+
+
+def _cigna_matching_records(records, selected_network):
+    """Return only records belonging to the portal-selected Cigna network."""
+    valid = [record for record in (records or []) if isinstance(record, dict)]
+    selected_network = selected_network if isinstance(selected_network, dict) else {}
+    if _cigna_network_value(selected_network, 'name', 'networkName', 'id', 'networkId'):
+        return [
+            record for record in valid
+            if _cigna_network_matches(record, selected_network)
+        ]
+    return valid
+
+
+def _cigna_primary_record(records, desc_hint='', covers='', selected_network=None):
+    """Choose a financial record from the portal-selected Cigna network."""
+    candidates = []
+    for record in _cigna_matching_records(records, selected_network):
+        if desc_hint and desc_hint.lower() not in str(record.get('desc', '')).lower():
+            continue
+        if covers and covers.upper() != str(record.get('covers', '')).upper():
+            continue
+        candidates.append(record)
+    if not candidates:
+        return {}
+    def tier_rank(record):
+        raw = record.get('tierIndex') or record.get('networkTier') or record.get('tier')
+        try:
+            return int(raw)
+        except (TypeError, ValueError):
+            return 999
+    return sorted(candidates, key=tier_rank)[0]
+
+
+def _cigna_class_codes(record):
+    return {
+        value.strip()
+        for value in str(record.get('classCode') or '').split(',')
+        if value.strip()
+    }
+
+
+def _cigna_general_annual_record(records, selected_network):
+    """Select the core dental maximum, excluding ortho/implant-only maxima."""
+    candidates = [
+        record for record in _cigna_matching_records(records, selected_network)
+        if 'calendar year maximum' in str(record.get('desc', '')).lower()
+        and str(record.get('covers', '')).upper() == 'IND'
+    ]
+    if not candidates:
+        return {}
+    return next(
+        (
+            record for record in candidates
+            if {'1', '2', '3'}.issubset(_cigna_class_codes(record))
+        ),
+        max(candidates, key=lambda record: len(_cigna_class_codes(record))),
+    )
+
+
+def _cigna_ortho_max_record(records, selected_network):
+    return next(
+        (
+            record for record in _cigna_matching_records(records, selected_network)
+            if 'ortho' in str(record.get('classDesc', '')).lower()
+            or 'ortho' in str(record.get('desc', '')).lower()
+            or '4' in _cigna_class_codes(record)
+        ),
+        {},
+    )
+
+
+def _cigna_ortho_deductible_record(records, selected_network):
+    return next(
+        (
+            record for record in _cigna_matching_records(records, selected_network)
+            if 'ortho' in str(record.get('classDesc', '')).lower()
+            or 'ortho' in str(record.get('desc', '')).lower()
+            or '4' in _cigna_class_codes(record)
+        ),
+        {},
+    )
+
+
+def _cigna_deductible_applicability(raw, selected_network):
+    """
+    Derive deductible service classes from selected-network records.
+    content_cigna.js attaches the parent classCode/classDesc to accumulations.
+    """
+    supplied = (raw.get('financials') or {}).get('deductible_applicability')
+    if isinstance(supplied, dict):
+        return supplied
+
+    records = _cigna_matching_records(
+        (raw.get('financials') or {}).get('deductible_records'),
+        selected_network,
+    )
+    codes = set()
+    descriptions = []
+    for record in records:
+        codes.update(_cigna_class_codes(record))
+        descriptions.append(str(record.get('classDesc') or '').lower())
+    desc = ','.join(descriptions)
+    return {
+        'has_selected_network_deductible': bool(records),
+        'class_codes': sorted(codes),
+        'class_descriptions': [
+            value.strip()
+            for value in ','.join(
+                str(record.get('classDesc') or '') for record in records
+            ).split(',')
+            if value.strip()
+        ],
+        'diagnostic': '1' in codes or 'diagnostic' in desc,
+        'preventive': '1' in codes or 'preventive' in desc,
+        'basic': '2' in codes or 'basic restorative' in desc,
+        'major': '3' in codes or 'major restorative' in desc,
+        'orthodontic': '4' in codes or 'orthodont' in desc,
+        'periodontal': '6' in codes or 'periodontal' in desc,
+        'implants': '9' in codes or 'implant' in desc,
+    }
+
+
+def _cigna_procedure_deductible(class_code, applicability):
+    codes = {
+        value.strip()
+        for value in str(class_code or '').split(',')
+        if value.strip() and value.strip().upper() not in ('N/A', 'NA')
+    }
+    if not codes:
+        return ''
+    deductible_codes = {
+        str(value).strip() for value in applicability.get('class_codes', [])
+    }
+    if applicability.get('has_selected_network_deductible'):
+        return 'YES' if bool(codes & deductible_codes) else 'NO'
+    return 'NO'
+
+
+def _cigna_covered_quadrant_count(api_details):
+    """Count resolved covered quadrant contexts; unresolved data stays blank."""
+    if str(api_details.get('coverage_scope') or '').lower() not in ('all', 'partial'):
+        return ''
+    quadrants = set()
+    for group in api_details.get('context_groups') or []:
+        if (group.get('outcome') or {}).get('covered') is not True:
+            continue
+        for context in group.get('contexts') or []:
+            value = str(context.get('quadrant') or '').upper().strip()
+            if value not in ('', 'N/A', 'NA'):
+                quadrants.add(value)
+    return str(len(quadrants)) if quadrants else ''
+
+
+def _cigna_waiting_period_values(raw_waiting):
+    if not raw_waiting:
+        return '', '', ''
+    values = raw_waiting if isinstance(raw_waiting, list) else [raw_waiting]
+    texts = []
+    for value in values:
+        if isinstance(value, dict):
+            texts.extend(
+                str(value.get(key) or '')
+                for key in (
+                    'summary', 'description', 'desc', 'value',
+                    'waitingPeriod', 'waiting_period', 'notes',
+                )
+            )
+        else:
+            texts.append(str(value))
+    text = clean(' '.join(part for part in texts if part))
+    if not text:
+        return '', '', ''
+    if re.search(r'\bno\s+waiting\b|does\s+not\s+apply|not\s+applicable', text, re.IGNORECASE):
+        return 'No', '0', ''
+    months = re.findall(r'(\d+)\s*month', text, re.IGNORECASE)
+    categories = []
+    for needle, label in (
+        ('diagnostic', 'Diagnostic'),
+        ('preventive', 'Preventive'),
+        ('basic', 'Basic'),
+        ('major', 'Major'),
+        ('orthodont', 'Orthodontic'),
+    ):
+        if needle in text.lower():
+            categories.append(label)
+    return 'Yes', (months[-1] if months else ''), ' & '.join(categories)
+
+
+def _normalize_cigna_portal(raw):
+    """
+    Translate Cigna's extension payload into the established Portal contract.
+    No Denticon insurance/benefit values are introduced here.
+    """
+    summary = raw.get('summary') or {}
+    patient = raw.get('patient') or {}
+    plan = raw.get('plan_details') or {}
+    network = plan.get('network') or {}
+    financials = raw.get('financials') or {}
+    notes = raw.get('notes') or {}
+    results = (raw.get('procedures') or {}).get('results') or []
+    frequency_by_code = {
+        str(item.get('procedure_code', '')).upper().strip(): item
+        for item in (raw.get('frequencies') or [])
+        if item.get('procedure_code')
+    }
+
+    maximums = financials.get('maximum_records') or []
+    deductibles = financials.get('deductible_records') or []
+    annual = _cigna_general_annual_record(maximums, network)
+    family_max = _cigna_primary_record(
+        maximums, 'Family Calendar Year Maximum', 'FAM', network
+    )
+    individual_ded = _cigna_primary_record(
+        deductibles, 'Individual Calendar Year Deductible', 'IND', network
+    )
+    family_ded = _cigna_primary_record(
+        deductibles, 'Family Calendar Year Deductible', 'FAM', network
+    )
+    ortho_max = _cigna_ortho_max_record(maximums, network)
+    ortho_ded = _cigna_ortho_deductible_record(deductibles, network)
+    deductible_applicability = _cigna_deductible_applicability(raw, network)
+
+    normalized_procs = []
+    for proc in results:
+        code = str(proc.get('procedure_code', '')).upper().strip()
+        if not code:
+            continue
+        api_details = proc.get('api_details') or {}
+        validation = str(api_details.get('validation_message') or '')
+        coverage_scope = str(api_details.get('coverage_scope') or '').lower()
+        lookup_failed = (
+            bool(api_details.get('lookup_error'))
+            or 'lookup failed' in str(proc.get('benefit_status') or '').lower()
+        )
+        unresolved_context = (
+            lookup_failed
+            or
+            coverage_scope == 'unresolved'
+            or (
+                bool(api_details.get('context_required'))
+                and bool(re.search(r'invalid|missing|required', validation, re.IGNORECASE))
+            )
+        )
+        matched_limitations = _cigna_matching_records(
+            api_details.get('limitation_records'), network
+        )
+        matched_coinsurance = _cigna_matching_records(
+            api_details.get('coinsurance_records'), network
+        )
+        matched_limitation = matched_limitations[0] if matched_limitations else {}
+        matched_coin = matched_coinsurance[0] if matched_coinsurance else {}
+        covered = proc.get('covered')
+        freq = str(
+            matched_limitation.get('summary')
+            or proc.get('frequency_limit')
+            or ''
+        )
+        if unresolved_context:
+            # The response is not a valid coverage decision. A tooth/arch/
+            # quadrant-specific request or successful API response is required
+            # before showing NC.
+            covered = None
+            freq = ''
+        elif covered is False:
+            freq = 'NOT COVERED'
+
+        limitation = matched_limitation or api_details.get('limitation') or {}
+        age = (
+            limitation.get('age_summary')
+            or proc.get('age_limitation')
+            or ''
+        )
+        if str(age).upper() in ('N/A', 'NA', 'NONE'):
+            age = ''
+        if not age:
+            age = (frequency_by_code.get(code) or {}).get('age_limitation') or ''
+        if str(age).upper() in ('N/A', 'NA', 'NONE'):
+            age = ''
+        if not age:
+            max_age = str(
+                limitation.get('maxAge')
+                or limitation.get('maximum_age')
+                or ''
+            ).strip()
+            if max_age not in ('', '0', '999'):
+                age = f'Under {max_age}'
+
+        history = proc.get('history_date') or ''
+        if unresolved_context:
+            history = ''
+        elif 'no history' in str(history).lower():
+            history = 'NH'
+
+        # Do not answer "number of quads for D4341" from quadrant context.
+        # A context value such as LR proves only the queried quadrant, not the
+        # plan's same-visit/max payable quadrant rule.
+        quadrant = '' if code == 'D4341' else _cigna_covered_quadrant_count(api_details)
+        if not quadrant:
+            quadrant = proc.get('quadrant') if code != 'D4341' else ''
+        if str(quadrant).upper() in ('N/A', 'NA', 'NONE', ''):
+            quadrant = ''
+        class_code = api_details.get('class_code') or proc.get('class_code') or ''
+
+        normalized_procs.append({
+            'procedure_code': code,
+            'description': proc.get('description') or '',
+            'frequency_limit': freq,
+            'benefit_level': (
+                _cigna_plan_pct(
+                    matched_coin.get('amount')
+                    or proc.get('coinsurance_member_pct')
+                )
+                if covered is True else
+                'N/A' if covered is False else ''
+            ),
+            'deductible': _cigna_procedure_deductible(
+                class_code, deductible_applicability
+            ),
+            'age_limit': age,
+            'late_date_of_service': history,
+            'number_of_quads': quadrant,
+            '_cigna_covered': covered,
+            '_cigna_coverage_scope': coverage_scope,
+            '_cigna_alternate_benefit': proc.get('alternate_benefit'),
+            '_cigna_class_code': class_code,
+        })
+
+    # Some Cigna high-level frequency records (for example D8080) may not be
+    # repeated in procedure results. Retain them so the PDF can still show NC
+    # or the available limitation without inventing a percentage.
+    result_codes = {p['procedure_code'] for p in normalized_procs}
+    for code, item in frequency_by_code.items():
+        if code in result_codes:
+            continue
+        records = _cigna_matching_records(
+            item.get('limitation_records'), network
+        )
+        selected = records[0] if records else {}
+        covered = selected.get('covered')
+        age = item.get('age_limitation') or ''
+        if str(age).upper() in ('N/A', 'NA', 'NONE'):
+            age = ''
+        normalized_procs.append({
+            'procedure_code': code,
+            'description': item.get('procedure') or '',
+            'frequency_limit': (
+                'NOT COVERED' if covered is False else item.get('limit') or ''
+            ),
+            'benefit_level': 'N/A' if covered is False else '',
+            'deductible': '',
+            'age_limit': age,
+            'late_date_of_service': 'NH',
+            'number_of_quads': '',
+            '_cigna_covered': covered,
+        })
+
+    covered_services = []
+    seen_categories = set()
+    cigna_category_map = {
+        'diagnostic and preventive': 'PREVENTIVE',
+        'basic restorative': 'RESTORATIVE',
+        'major restorative': 'PROSTHODONTICS',
+    }
+    for item in raw.get('coinsurance') or []:
+        if not _cigna_network_matches(item, network):
+            continue
+        raw_category = str(item.get('category', '')).strip()
+        category = next(
+            (
+                mapped for hint, mapped in cigna_category_map.items()
+                if hint in raw_category.lower()
+            ),
+            raw_category,
+        )
+        if not category or category.upper() in seen_categories:
+            continue
+        seen_categories.add(category.upper())
+        plan_pct = _cigna_plan_pct(item.get('patient_pays'))
+        category_upper = category.upper()
+        canonical_category = (
+            'PREVENTIVE'
+            if 'DIAGNOSTIC' in category_upper or 'PREVENTIVE' in category_upper
+            else 'RESTORATIVE'
+            if 'BASIC' in category_upper
+            else 'PROSTHODONTICS'
+            if 'MAJOR' in category_upper
+            else category
+        )
+        covered_services.append({
+            'category': canonical_category,
+            'services': '',
+            'in_network': plan_pct,
+            'out_of_network': '',
+        })
+
+    coverage = plan.get('current_coverage') or summary.get('coverage_dates') or {}
+    normalized = {
+        '_skip_llm': True,
+        '_source_insurer': 'cigna',
+        'carrier_information': {'name': 'Cigna'},
+        'subscriber_info': {
+            'name': plan.get('subscriber') or patient.get('name') or '',
+            'dob': plan.get('subscriber_dob') or patient.get('dob') or '',
+            'relation': patient.get('relationship') or '',
+        },
+        'metlife_data': {
+            'patient': {
+                'name': patient.get('name') or '',
+                'dob': patient.get('dob') or '',
+                'relationship': patient.get('relationship') or '',
+            },
+            'plan_details': {
+                'start_date': coverage.get('from') or plan.get('initial_coverage_date') or '',
+                'end_date': coverage.get('to') or '',
+                'subscriber_id': summary.get('patient_id') or '',
+                'employer_group': summary.get('group_name') or plan.get('account_name') or '',
+                'group_number': summary.get('group_number') or plan.get('account_number') or '',
+                'network': plan.get('plan_type') or summary.get('plan_type') or '',
+                'plan_type': plan.get('plan_type') or summary.get('plan_type') or '',
+            },
+            'financials': {
+                'annual_max': {
+                    'total': annual.get('amount') or '',
+                    'used': annual.get('met') or '',
+                    'remaining': annual.get('remaining') or '',
+                },
+                'deductible_ind': {
+                    'total': individual_ded.get('amount') or '',
+                    'used': individual_ded.get('met') or '',
+                    'remaining': individual_ded.get('remaining') or '',
+                },
+                'deductible_fam': {
+                    'total': family_ded.get('amount') or '',
+                    'used': family_ded.get('met') or '',
+                    'remaining': family_ded.get('remaining') or '',
+                },
+                'ortho_lifetime': {
+                    'total': ortho_max.get('amount') or '',
+                    'used': ortho_max.get('met') or '',
+                    'remaining': ortho_max.get('remaining') or '',
+                },
+            },
+            'provider_info': {
+                'provider_name': '',
+                'provider_network_status': (
+                    'Out-of-Network'
+                    if str(network.get('name', '')).upper() == 'OONET'
+                    else 'In-Network'
+                ),
+            },
+            'covered_services': covered_services,
+            'provisions': [],
+        },
+        'benefit_coverage': {'procedures': normalized_procs},
+    }
+
+    dependent_age = next(
+        (
+            str(x.get('age'))
+            for x in raw.get('age_limits') or []
+            if 'dependent' in str(x.get('type', '')).lower()
+            and _cigna_network_matches(x, network)
+        ),
+        '',
+    )
+    ortho_age = next(
+        (
+            str(x.get('age'))
+            for x in raw.get('age_limits') or []
+            if 'ortho' in str(x.get('type', '')).lower()
+            and _cigna_network_matches(x, network)
+        ),
+        '',
+    )
+    waiting = notes.get('waiting_period')
+    missing_tooth = str(notes.get('missing_tooth') or '').strip()
+    normalized['_cigna_meta'] = {
+        'dependent_age': dependent_age,
+        'ortho_age': ortho_age,
+        'deductible_applicability': deductible_applicability,
+        'missing_tooth': missing_tooth,
+        'waiting_period': waiting,
+        'family_deductible_present': bool(family_ded),
+        'individual_deductible_present': bool(individual_ded),
+        'annual_max_present': bool(annual),
+        'ortho_max_present': bool(ortho_max),
+        'ortho_ded_total': ortho_ded.get('amount') or '',
+        'ortho_ded_used': ortho_ded.get('met') or '',
+        'network_name': network.get('name') or '',
+        'plan_renews': plan.get('plan_renews') or '',
+    }
+    return normalized
+
+
+def _apply_cigna_output_rules(data, normalized):
+    """Apply Cigna-only meanings and mark unavailable portal values with '-'."""
+    meta = normalized.get('_cigna_meta') or {}
+    deductible_applicability = meta.get('deductible_applicability') or {}
+    missing_text = str(meta.get('missing_tooth') or '').lower()
+    if 'does not apply' in missing_text or 'not applicable' in missing_text:
+        missing_tooth = 'No'
+    elif missing_text:
+        missing_tooth = 'Yes' if 'appl' in missing_text else ''
+    else:
+        missing_tooth = ''
+
+    waiting_value, waiting_months, applies_to = _cigna_waiting_period_values(
+        meta.get('waiting_period')
+    )
+
+    data.update({
+        'source_insurer': 'cigna',
+        'ins_name': '(IN) Cigna',
+        'ins_address': 'PO BOX 188037, Chattanooga, TN 37422',
+        'ins_phone': '800-244-6224',
+        'payor_id': '62308',
+        # TOTAL/P0010 is the selected Cigna network, not a fee schedule name.
+        'fee_schedule': '-',
+        'ssn': data.get('member_id') or '-',
+        'elig_notes': 'ins: cigna, benefits verified online',
+        'plan_year_start': (
+            'January'
+            if 'calendar' in str(meta.get('plan_renews', '')).lower()
+            else ''
+        ),
+        'family_ded': (
+            data.get('family_ded', '')
+            if meta.get('family_deductible_present') else '-'
+        ),
+        'family_ded_paid': (
+            data.get('family_ded_paid', '')
+            if meta.get('family_deductible_present') else '-'
+        ),
+        'yearly_max': (
+            data.get('yearly_max', '') if meta.get('annual_max_present') else '-'
+        ),
+        'yearly_rem': (
+            data.get('yearly_rem', '') if meta.get('annual_max_present') else '-'
+        ),
+        'indiv_ded': (
+            data.get('indiv_ded', '')
+            if meta.get('individual_deductible_present') else '-'
+        ),
+        'indiv_ded_paid': (
+            data.get('indiv_ded_paid', '')
+            if meta.get('individual_deductible_present') else '-'
+        ),
+        'ortho_max': (
+            data.get('ortho_max', '')
+            if meta.get('ortho_max_present') else '-'
+        ),
+        'ortho_max_paid': (
+            data.get('ortho_max_paid', '')
+            if meta.get('ortho_max_present') else '-'
+        ),
+        'ortho_ded': _dollar(meta.get('ortho_ded_total'), default='-'),
+        'ortho_ded_paid': _dollar(meta.get('ortho_ded_used'), default='-'),
+        'dep_age_limit': meta.get('dependent_age') or '-',
+        'waiting_period': waiting_value or '-',
+        'waiting_period_mo': waiting_months or '-',
+        'applies_to': applies_to or '-',
+        'missing_tooth': missing_tooth,
+        'major_on_prep': '-',
+        'or_seat': '-',
+        'ded_prev': (
+            'Yes' if deductible_applicability.get('preventive') else 'No'
+        ),
+        'ded_diag': (
+            'Yes' if deductible_applicability.get('diagnostic') else 'No'
+        ),
+        'molars_only_sealants': '-',
+        'posterior_composite_downgrade': '-',
+        'porcelain_posterior_downgrade': '-',
+        'd2950_same_day_crown': '-',
+        'ortho_payment_frequency': '-',
+        'ortho_age_limit_llm': meta.get('ortho_age') or '-',
+        'd0120_d0150_share_d0140': '-',
+        'd4910_d1110_share_freq': '-',
+        'pre_auth': 'Recommended-$200',
+    })
+
+    procs = data.get('procs') or {}
+    sealants_molars = _cigna_molars_only_sealants(procs)
+    if sealants_molars in ('Yes', 'No'):
+        data['molars_only_sealants'] = sealants_molars
+    # Do not answer downgrade questions from Cigna alternateBenefit alone.
+    # Business confirmation is needed before treating alternateBenefit=false
+    # as "not downgraded" or alternateBenefit=true as a specific downgrade.
+    # composite = procs.get('D2391') or procs.get('D2331')
+    # crown = procs.get('D2740')
+    # if composite and composite.get('_cigna_covered') is not None:
+    #     alternate = composite.get('_cigna_alternate_benefit')
+    #     if isinstance(alternate, bool):
+    #         data['posterior_composite_downgrade'] = 'Yes' if alternate else 'No'
+    # if crown and crown.get('_cigna_covered') is not None:
+    #     alternate = crown.get('_cigna_alternate_benefit')
+    #     if isinstance(alternate, bool):
+    #         data['porcelain_posterior_downgrade'] = 'Yes' if alternate else 'No'
+
+    if data.get('chair_provider') in ('', '—'):
+        data['chair_provider'] = '-'
+    if data.get('d4341_number_of_quads') in ('', '—'):
+        data['d4341_number_of_quads'] = '-'
+    return data
+
+
 def _extract(portal_raw, denticon_raw):
     """Return a flat dict of all values needed to render the PDF."""
+
+    if _is_cigna_portal(portal_raw):
+        normalized = _normalize_cigna_portal(portal_raw)
+        return _apply_cigna_output_rules(
+            _extract(normalized, denticon_raw),
+            normalized,
+        )
 
     carrier = (
         portal_raw.get('carrier_information') or
         portal_raw.get('carrier_info') or {}
     )
 
-    ml = portal_raw.get('metlife_data') or {}
-    if not ml:
-        ml = portal_raw
-    bc = portal_raw.get('benefit_coverage') or denticon_raw.get('benefit_coverage') or {}
-
-    if not ml and 'patient' in portal_raw and 'financials' in portal_raw:
-        ml = portal_raw
-    if not ml:
-        ml = denticon_raw.get('metlife_data', {})
-    if not bc:
-        bc = denticon_raw.get('benefit_coverage', {})
+    # All non-office PDF data comes exclusively from Portal JSON.
+    ml = portal_raw.get('metlife_data') or portal_raw
+    bc = portal_raw.get('benefit_coverage') or {}
 
     dent       = denticon_raw.get('denticon_data') or denticon_raw
     dent_hdr   = dent.get('header', {})
-    dent_ins   = dent_hdr.get('insurance_summary', {})
-    dent_fin   = dent_hdr.get('financials', {})
-    dent_plans = dent.get('plans', [])
-
     dent_pt = dent.get('patient', {})
-    dent_pi = dent.get('primary_insurance', {})
-    dent_rp = dent.get('responsible_party', {})
-
-    notes_str = ((dent_plans[0].get('benefits') or {}).get('notes', '')
-                 if dent_plans else '')
-    notes = _parse_notes(notes_str)
 
     ml_pat      = ml.get('patient', {})       if isinstance(ml.get('patient', {}),       dict) else {}
     ml_pln      = ml.get('plan_details', {})  if isinstance(ml.get('plan_details', {}),  dict) else {}
@@ -692,23 +1432,26 @@ def _extract(portal_raw, denticon_raw):
     if not isinstance(svcs, list):
         svcs = []
 
-    interp = _interpret_provisions(portal_raw)
+    interp = (
+        dict(_LLM_DEFAULT_ANSWERS)
+        if portal_raw.get('_skip_llm')
+        else _interpret_provisions(portal_raw)
+    )
 
-    waiting_period, waiting_period_mo, applies_to = _parse_waiting_period(provisions, notes)
+    waiting_period, waiting_period_mo, applies_to = _parse_waiting_period(provisions, {})
 
     # ── Derived values ──────────────────────────────────────────────────────
 
     carrier_name = (
         _g(carrier,      'name',            default='') or
-        _g(dent_ins,     'provider',        default='') or
         _g(ml_provider,  'provider_name',   default='') or
-        dent_pi.get('carrier_name', '').replace('(IN) ', '').replace('(OUT) ', '').strip() or
+        ('MetLife' if portal_raw.get('metlife_data') else '') or
         '—'
     )
 
     is_metlife = 'METLIFE' in carrier_name.upper()
 
-    pre_auth_val = _parse_pre_auth(notes, notes_str, carrier_name)
+    pre_auth_val = _parse_pre_auth({}, '', carrier_name)
 
     # Build procedure-code → details map
     procs = {}
@@ -754,31 +1497,25 @@ def _extract(portal_raw, denticon_raw):
     orth = ml_fin.get('ortho_lifetime', {})
 
     member_id = (
-        _g(dent_pi,  'sub_id',        default='') or
-        _g(dent_ins, 'header_sub_id', default='') or
-        _g(dent_ins, 'member_id',     default='') or
-        _g(dent_ins, 'subscriber_id', default='') or
+        _g(ml_pln, 'subscriber_id', default='') or
         '—'
     )
 
     sub_info = portal_raw.get('subscriber_info') or {}
 
     subscriber_name = _format_name(
-        sub_info.get('name', '') or
-        _g(dent_pi, 'subscriber_name', default='') or
-        _g(dent_fin, 'responsible', default='')
+        sub_info.get('name', '') or _g(ml_pat, 'name', default='')
     )
 
     subscriber_dob = (
         sub_info.get('dob', '') or
-        _g(dent_rp,  'dob',    default='') or
-        _g(dent_fin, 'rp_dob', default='') or
+        _g(ml_pat, 'dob', default='') or
         '—'
     )       
 
     raw_rel = (
         _g(ml_pat,   'relationship',           default='') or
-        _g(dent_pi,  'relation_to_subscriber', default='')
+        _g(sub_info, 'relation', 'relationship', default='')
     )
     relationship = RELATION_MAP.get(raw_rel.strip().lower(), raw_rel or '—')
 
@@ -793,24 +1530,44 @@ def _extract(portal_raw, denticon_raw):
         _g(dent_hdr, 'provider_name', default='')
     )
 
-    chair_provider      = '-'
+    # Do not assume that the hygienist is the chair provider.
+    chair_provider = _format_name(
+        _g(dent_pt, 'chair_provider', default='—')
+    )
     provider_speciality = (
         _g(dent_hdr, 'provider_speciality', 'speciality', 'specialty', default='') or
         'Dentist'
     )
-    appointment_date = datetime.today().strftime('%m/%d/%Y')
+    appointment_date = (
+        _g(dent_pt, 'appointment_date', 'next_visit', default='') or
+        datetime.today().strftime('%m/%d/%Y')
+    )
 
+    # Portal-only group number lookup. Support the common schema variants at
+    # both plan and MetLife payload levels without falling back to Denticon.
     group_number = (
-        _g(dent_pi, 'group_num', default='') or
-        notes.get('group_number', '—')
+        _g(
+            ml_pln,
+            'group_number', 'group_num', 'group_id', 'group_no',
+            'employer_group_number', 'contract_number',
+            default='',
+        ) or
+        _g(
+            ml,
+            'group_number', 'group_num', 'group_id', 'group_no',
+            'employer_group_number', 'contract_number',
+            default='',
+        ) or
+        _g(
+            portal_raw,
+            'group_number', 'group_num', 'group_id', 'group_no',
+            'employer_group_number', 'contract_number',
+            default='',
+        ) or
+        '—'
     )
 
-    carrier_phone = (
-        _g(carrier,  'phone',         default='') or
-        _g(dent_pi,  'carrier_phone', default='') or
-        _g(dent_ins, 'phone',         default='') or
-        ''
-    )
+    carrier_phone = _g(carrier, 'phone', default='')
 
     # ── FIX #2: Molars-only sealants — deterministic from D1351 frequency ──
     molars_only = _rule_molars_only_sealants(procs)
@@ -841,8 +1598,8 @@ def _extract(portal_raw, denticon_raw):
 
     return {
         # Patient / Subscriber
-        'patient_name':    _g(ml_pat, 'name') or _g(dent_pt, 'name', default='—'),
-        'patient_dob':     _g(ml_pat, 'dob')  or _g(dent_pt, 'dob',  default='—'),
+        'patient_name':    _g(ml_pat, 'name'),
+        'patient_dob':     _g(ml_pat, 'dob'),
         'relationship':    relationship,
         'member_id':       member_id,
         'subscriber_name': subscriber_name,
@@ -862,8 +1619,7 @@ def _extract(portal_raw, denticon_raw):
             if is_metlife else (carrier_name if carrier_name else '—')
         ),
         'group_name': (
-            _g(ml_pln, 'employer_group', default='') or
-            notes.get('employer', '—')
+            _g(ml_pln, 'employer_group')
         ),
         'group_number': group_number,
         'fee_schedule': (
@@ -876,7 +1632,11 @@ def _extract(portal_raw, denticon_raw):
             if is_metlife
             else (_build_insurance_address(carrier) or '—')
         ),
-        'ins_phone': (_clean_phone(carrier_phone) if carrier_phone else '—'),
+        'ins_phone': (
+            _clean_phone(carrier_phone)
+            if carrier_phone
+            else ('877-638-3379' if is_metlife else '—')
+        ),
         'network_status': (
             'IN'  if 'in-network'     in str(_g(ml_provider, 'provider_network_status')).lower() else
             'OUT' if 'out-of-network' in str(_g(ml_provider, 'provider_network_status')).lower() else
@@ -891,7 +1651,7 @@ def _extract(portal_raw, denticon_raw):
         'plan_type': (
             'PPO'
             if ('PDP' in str(_g(ml_pln, 'network')).upper() or 'PPO' in carrier_name.upper())
-            else notes.get('plan_type', '—')
+            else _g(ml_pln, 'plan_type')
         ),
         'plan_year_start': _get_plan_year_start(procs, _g(ml_pln, 'start_date')),
         'elig_notes': (
@@ -907,8 +1667,8 @@ def _extract(portal_raw, denticon_raw):
         'indiv_ded_paid':  _zero_money(_dollar(_g(dind, 'used'))),
         'family_ded':      family_ded_val,          # ← FIX #1
         'family_ded_paid': _zero_money(_dollar(_g(dfam, 'used'))),
-        'ded_prev':        notes.get('ded_prev', '—'),
-        'ded_diag':        _zero_money('—'),
+        'ded_prev':        _deductible_applies(svcs, 'PREVENTIVE'),
+        'ded_diag':        _deductible_applies(svcs, 'DIAGNOSTIC'),
 
         'waiting_period':    waiting_period,
         'waiting_period_mo': waiting_period_mo,
@@ -919,16 +1679,16 @@ def _extract(portal_raw, denticon_raw):
         'missing_tooth': _missing_tooth_clause(missing_tooth_text),
         'pre_auth':      pre_auth_val,
 
-        'dep_age_limit': notes.get('dep_age_limit', '—'),
+        'dep_age_limit': _extract_dependent_age_limit(provisions),
         'ortho_ded':      '$0.00',
         'ortho_ded_paid': '$0.00',
         'ortho_max':      _dollar(_g(orth, 'total')),
         'ortho_max_paid': _dollar(_g(orth, 'used')),
 
         # Benefit percentages
-        'pct_prev':  _covered_pct(svcs, 'PREVENTIVE')                or notes.get('prev_pct',  '—'),
-        'pct_basic': _covered_pct(svcs, 'RESTORATIVE', 'DIAGNOSTIC') or notes.get('basic_pct', '—'),
-        'pct_major': _covered_pct(svcs, 'PROSTHODONTICS', 'IMPLANT') or notes.get('major_pct', '—'),
+        'pct_prev':  _covered_pct(svcs, 'PREVENTIVE'),
+        'pct_basic': _covered_pct(svcs, 'RESTORATIVE', 'DIAGNOSTIC'),
+        'pct_major': _covered_pct(svcs, 'PROSTHODONTICS', 'IMPLANT'),
 
         # Deterministic / LLM-interpreted fields
         'molars_only_sealants':          molars_only,          # FIX #2
@@ -937,6 +1697,7 @@ def _extract(portal_raw, denticon_raw):
         'd2950_same_day_crown':          d2950_same_day,       # FIX #3
         'd0120_d0150_share_d0140':       d0120_d0150_share_with_d0140,
         'd4910_d1110_share_freq':        d4910_d1110_same_freq,
+        'd4341_number_of_quads':          _number_of_quads_d4341(procs),
         'ortho_payment_frequency':       interp.get('ortho_payment_frequency', '—'),
         'ortho_age_limit_llm':           interp.get('ortho_age_limit',         '—'),
 
@@ -987,9 +1748,69 @@ def _sec_bar(c, x, y, w, h, label, font_size=9):
     _txt(c, x + 6, y + h - 4, label, 'Helvetica-Bold', font_size, TEAL_DARK)
 
 
-def _lv(c, x, y, label, value, lsz=7, vsz=8.5, vcolor=TEAL, gap=14):
+def _fit_text_lines(text, font, size, max_width, max_lines=1):
+    """Wrap text to a bounded width, including strings with no spaces."""
+    text = clean(text)
+    if not text:
+        return [''], size
+    if not max_width:
+        return [text], size
+    if stringWidth(text, font, size) <= max_width:
+        return [text], size
+
+    # Keep compact values on one line when a small font adjustment is enough.
+    for fitted_size in (size - 0.5, size - 1, size - 1.5, max(6, size - 2)):
+        if stringWidth(text, font, fitted_size) <= max_width:
+            return [text], fitted_size
+
+    words = text.split()
+    lines, current = [], ''
+    for word in words:
+        candidate = f'{current} {word}'.strip()
+        if stringWidth(candidate, font, size) <= max_width:
+            current = candidate
+            continue
+        if current:
+            lines.append(current)
+            current = ''
+        # Split an oversized token so it cannot escape the box.
+        while word and stringWidth(word, font, size) > max_width:
+            cut = len(word)
+            while cut > 1 and stringWidth(word[:cut], font, size) > max_width:
+                cut -= 1
+            lines.append(word[:cut])
+            word = word[cut:]
+        current = word
+    if current:
+        lines.append(current)
+
+    if len(lines) > max_lines:
+        lines = lines[:max_lines]
+        last = lines[-1]
+        while last and stringWidth(last + '…', font, size) > max_width:
+            last = last[:-1]
+        lines[-1] = (last.rstrip() + '…') if last else '…'
+    return lines or ['—'], size
+
+
+def _bounded_txt(c, x, y, text, max_width, font='Helvetica', size=8,
+                 color=DARK, max_lines=1, leading=None):
+    lines, fitted_size = _fit_text_lines(
+        text, font, size, max_width, max_lines=max_lines
+    )
+    leading = leading or fitted_size + 1
+    for i, line in enumerate(lines):
+        _txt(c, x, y + (i * leading), line, font, fitted_size, color)
+
+
+def _lv(c, x, y, label, value, lsz=7, vsz=8.5, vcolor=TEAL, gap=14,
+        max_width=None, max_lines=1):
     _txt(c, x, y, label, 'Helvetica', lsz, GREY)
-    _txt(c, x, y + gap, value or '—', 'Helvetica-Bold', vsz, vcolor)
+    _bounded_txt(
+        c, x, y + gap, value if value is not None else '—', max_width,
+        'Helvetica-Bold', vsz, vcolor, max_lines=max_lines,
+        leading=max(7, vsz + 1),
+    )
 
 
 def _footer(c, page_num, total_pages):
@@ -1039,11 +1860,12 @@ def _page1(c, d, total_pages):
     _filled_rect(c, MARGIN, y, HALF, BOX_H, fill=GREY_LIGHT, stroke_color=BORDER)
     _filled_rect(c, MARGIN, y, HALF, 15,    fill=TEAL)
     _txt(c, MARGIN + 5, y + 11, 'Office Information', 'Helvetica-Bold', 8.5, WHITE)
-    _lv(c, MARGIN + 5, y + 22,  'Office Name',              d['office_name'])
-    _lv(c, MARGIN + 5, y + 46,  'Preferred Provider Name',  d['provider_name'])
-    _lv(c, MARGIN + 5, y + 70,  'Chair Provider Name',      d['chair_provider'])
-    _lv(c, MARGIN + 5, y + 94,  'Provider Speciality',      d['provider_speciality'])
-    _lv(c, MARGIN + 5, y + 118, 'Appointment Date',         d['appointment_date'])
+    office_value_w = HALF - 10
+    _lv(c, MARGIN + 5, y + 22,  'Office Name',             d['office_name'],         max_width=office_value_w)
+    _lv(c, MARGIN + 5, y + 46,  'Preferred Provider Name', d['provider_name'],       max_width=office_value_w)
+    _lv(c, MARGIN + 5, y + 70,  'Chair Provider Name',     d['chair_provider'],      max_width=office_value_w)
+    _lv(c, MARGIN + 5, y + 94,  'Provider Speciality',     d['provider_speciality'], max_width=office_value_w)
+    _lv(c, MARGIN + 5, y + 118, 'Appointment Date',        d['appointment_date'],    max_width=office_value_w)
 
     px = MARGIN + HALF + 8
     _filled_rect(c, px, y, HALF, BOX_H, fill=GREY_LIGHT, stroke_color=BORDER)
@@ -1051,13 +1873,14 @@ def _page1(c, d, total_pages):
     _txt(c, px + 5, y + 11, 'Patient / Subscriber Information', 'Helvetica-Bold', 8.5, WHITE)
 
     HC = HALF / 2
-    _lv(c, px + 5,      y + 22, 'Patient Name',           d['patient_name'])
-    _lv(c, px + HC + 3, y + 22, 'Date of Birth',          d['patient_dob'])
-    _lv(c, px + 5,      y + 46, 'Member ID#',             d['member_id'])
-    _lv(c, px + HC + 3, y + 46, 'Relation to Subscriber', d['relationship'])
-    _lv(c, px + 5,      y + 70, 'Subscriber Name',        d['subscriber_name'])
-    _lv(c, px + HC + 3, y + 70, 'Date of Birth',          d['subscriber_dob'])
-    _lv(c, px + 5,      y + 94, 'SSN#',                   d['member_id'])
+    patient_value_w = HC - 10
+    _lv(c, px + 5,      y + 22, 'Patient Name',           d['patient_name'],    max_width=patient_value_w)
+    _lv(c, px + HC + 3, y + 22, 'Date of Birth',          d['patient_dob'],     max_width=patient_value_w)
+    _lv(c, px + 5,      y + 46, 'Member ID#',             d['member_id'],       max_width=patient_value_w)
+    _lv(c, px + HC + 3, y + 46, 'Relation to Subscriber', d['relationship'],    max_width=patient_value_w)
+    _lv(c, px + 5,      y + 70, 'Subscriber Name',        d['subscriber_name'], max_width=patient_value_w)
+    _lv(c, px + HC + 3, y + 70, 'Date of Birth',          d['subscriber_dob'],  max_width=patient_value_w)
+    _lv(c, px + 5,      y + 94, 'SSN#',                   d['ssn'],             max_width=patient_value_w)
     y += BOX_H + 5
 
     INS_BOX_H = 175
@@ -1068,37 +1891,39 @@ def _page1(c, d, total_pages):
     T3 = CW / 3
 
     r1 = y + 34
-    _lv(c, MARGIN + 10,          r1, 'Insurance Name',   d['ins_name'],    lsz=7, vsz=9, gap=14)
-    _lv(c, MARGIN + T3 + 10,     r1, 'Group Name',       d['group_name'],  lsz=7, vsz=9, gap=14)
-    _lv(c, MARGIN + (T3*2) + 10, r1, 'Group Number',     d['group_number'],lsz=7, vsz=9, gap=14)
+    insurance_value_w = T3 - 20
+    _lv(c, MARGIN + 10,          r1, 'Insurance Name', d['ins_name'],     lsz=7, vsz=9, gap=14, max_width=insurance_value_w, max_lines=2)
+    _lv(c, MARGIN + T3 + 10,     r1, 'Group Name',     d['group_name'],   lsz=7, vsz=9, gap=14, max_width=insurance_value_w, max_lines=2)
+    _lv(c, MARGIN + (T3*2) + 10, r1, 'Group Number',   d['group_number'], lsz=7, vsz=9, gap=14, max_width=insurance_value_w, max_lines=2)
     _hline(c, MARGIN, y + 72, W - MARGIN, lw=0.35)
 
     r2 = y + 92
-    _lv(c, MARGIN + 10,          r2, 'Fee Schedule',       d['fee_schedule'], lsz=7, vsz=9,   gap=14)
-    _lv(c, MARGIN + T3 + 10,     r2, 'Insurance Address',  d['ins_address'],  lsz=7, vsz=8.5, gap=14)
-    _lv(c, MARGIN + (T3*2) + 10, r2, 'Insurance Phone',    d['ins_phone'],    lsz=7, vsz=9,   gap=14)
+    _lv(c, MARGIN + 10,          r2, 'Fee Schedule',      d['fee_schedule'], lsz=7, vsz=9,   gap=14, max_width=insurance_value_w, max_lines=2)
+    _lv(c, MARGIN + T3 + 10,     r2, 'Insurance Address', d['ins_address'],  lsz=7, vsz=8.5, gap=14, max_width=insurance_value_w, max_lines=2)
+    _lv(c, MARGIN + (T3*2) + 10, r2, 'Insurance Phone',   d['ins_phone'],    lsz=7, vsz=9,   gap=14, max_width=insurance_value_w, max_lines=2)
     _hline(c, MARGIN, y + 126, W - MARGIN, lw=0.35)
 
     r3 = y + 146
-    _lv(c, MARGIN + 10,          r3, 'Provider Network Status', d['network_status'], lsz=7, vsz=9, gap=14)
-    _lv(c, MARGIN + T3 + 10,     r3, 'Patient Eff Date',        d['eff_date'],        lsz=7, vsz=9, gap=14)
-    _lv(c, MARGIN + (T3*2) + 10, r3, 'Patient Term Date',       d['term_date'],       lsz=7, vsz=9, gap=14)
+    _lv(c, MARGIN + 10,          r3, 'Provider Network Status', d['network_status'], lsz=7, vsz=9, gap=14, max_width=insurance_value_w)
+    _lv(c, MARGIN + T3 + 10,     r3, 'Patient Eff Date',        d['eff_date'],        lsz=7, vsz=9, gap=14, max_width=insurance_value_w)
+    _lv(c, MARGIN + (T3*2) + 10, r3, 'Patient Term Date',       d['term_date'],       lsz=7, vsz=9, gap=14, max_width=insurance_value_w)
 
     y += INS_BOX_H
 
     ROW_H = 44
     _filled_rect(c, MARGIN, y, CW, ROW_H, fill=GREY_LIGHT, stroke_color=BORDER)
     _hline(c, MARGIN, y + 1, W - MARGIN, color=BORDER, lw=0.3)
-    _lv(c, MARGIN + 12,          y + 14, 'PPO / Indemnity / HMO Plan?', d['plan_type'],       lsz=7, vsz=9, gap=16)
-    _lv(c, MARGIN + T3 + 12,     y + 14, 'Starting Month of Plan Year', d['plan_year_start'], lsz=7, vsz=9, gap=16)
-    _lv(c, MARGIN + (T3*2) + 12, y + 14, 'Payor ID',                   d['payor_id'],        lsz=7, vsz=9, gap=16)
+    _lv(c, MARGIN + 12,          y + 14, 'PPO / Indemnity / HMO Plan?', d['plan_type'],       lsz=7, vsz=9, gap=16, max_width=T3 - 24)
+    _lv(c, MARGIN + T3 + 12,     y + 14, 'Starting Month of Plan Year', d['plan_year_start'], lsz=7, vsz=9, gap=16, max_width=T3 - 24)
+    _lv(c, MARGIN + (T3*2) + 12, y + 14, 'Payor ID',                    d['payor_id'],         lsz=7, vsz=9, gap=16, max_width=T3 - 24)
 
     y += ROW_H
 
     EN_H = 24
     _filled_rect(c, MARGIN, y, CW, EN_H, fill=GREY_LIGHT, stroke_color=BORDER)
     _txt(c, MARGIN + 5,  y + 8, 'Eligibility Notes:', 'Helvetica',      7.5, GREY)
-    _txt(c, MARGIN + 68, y + 8, d['elig_notes'],       'Helvetica-Bold', 8,   TEAL)
+    _bounded_txt(c, MARGIN + 68, y + 8, d['elig_notes'], CW - 75,
+                 'Helvetica-Bold', 8, TEAL, max_lines=2, leading=9)
     y += EN_H + 5
 
     cov_pairs = [
@@ -1133,9 +1958,11 @@ def _page1(c, d, total_pages):
     HALF_CW = CW / 2
     cv_y = y + 22
     for l1, v1, l2, v2 in cov_pairs:
-        _lv(c, MARGIN + 5,           cv_y, l1, v1, vsz=8, gap=11)
+        _lv(c, MARGIN + 5, cv_y, l1, v1, vsz=8, gap=11,
+            max_width=HALF_CW - 12)
         if l2:
-            _lv(c, MARGIN + HALF_CW + 5, cv_y, l2, v2, vsz=8, gap=11)
+            _lv(c, MARGIN + HALF_CW + 5, cv_y, l2, v2, vsz=8, gap=11,
+                max_width=HALF_CW - 12)
         cv_y += 22
 
     _footer(c, 1, total_pages)
@@ -1190,6 +2017,7 @@ _BENEFIT_ROWS = [
     ('PERIODONTICS',                                  None,    'cat'),
     ('Osseous Surgery (D4260)',                       'D4260', 'data'),
     ('Scaling & Root Planning (D4341)',               'D4341', 'data'),
+    ('Number of quads for the code D4341',             None,    'note'),
     ('Full Mouth Debridement (D4355)',                'D4355', 'data'),
     ('Arestin (D4381)',                               'D4381', 'data'),
     ('Perio Maintenance (D4910)',                     'D4910', 'data'),
@@ -1238,9 +2066,37 @@ _NOTE_DATA_MAP = {
     'Can D2950 be done same day as crown?':          'd2950_same_day_crown',
     'Porcelain crowns downgraded on posterior teeth':'porcelain_posterior_downgrade',
     'Do D4910 and D1110 share a frequency?':        'd4910_d1110_share_freq',
+    'Number of quads for the code D4341':            'd4341_number_of_quads',
     'Payment Frequency':                            'ortho_payment_frequency',
     'Ortho Age Limit':                              'ortho_age_limit_llm',
 }
+
+
+def _table_text(value, width, align='CENTER', color=TEAL, bold=False,
+                italic=False, size=7.3):
+    """Create a wrapping table cell that cannot paint over adjacent columns."""
+    font = (
+        'Helvetica-BoldOblique' if bold and italic else
+        'Helvetica-Bold' if bold else
+        'Helvetica-Oblique' if italic else
+        'Helvetica'
+    )
+    style = ParagraphStyle(
+        name=f'bounded-{font}-{align}-{size}',
+        fontName=font,
+        fontSize=size,
+        leading=size + 1.2,
+        textColor=color,
+        alignment={'LEFT': 0, 'CENTER': 1, 'RIGHT': 2}.get(align, 1),
+        wordWrap='CJK',  # also wraps IDs/URLs/other unbroken strings
+        splitLongWords=True,
+        allowWidows=0,
+        allowOrphans=0,
+        spaceBefore=0,
+        spaceAfter=0,
+    )
+    safe = escape(str('—' if value is None else value)).replace('\n', '<br/>')
+    return Paragraph(safe, style)
 
 
 def _build_benefit_table(d):
@@ -1286,7 +2142,11 @@ def _build_benefit_table(d):
             data_key = _NOTE_DATA_MAP.get(label, '')
             note_val = d.get(data_key, '—') if data_key else '—'
 
-            rows.append([label, note_val, '', '', '', ''])
+            rows.append([
+                _table_text(label, col_w[0] - 8, 'LEFT', GREY, italic=True, size=7),
+                _table_text(note_val, col_w[1] - 8, 'CENTER', TEAL_DARK, bold=True, size=7),
+                '', '', '', '',
+            ])
             xstyle += [
                 ('BACKGROUND', (0, ri), (-1, ri), colors.HexColor('#f8fcfe')),
                 ('TEXTCOLOR',  (0, ri), (0,  ri), GREY),
@@ -1306,7 +2166,7 @@ def _build_benefit_table(d):
                 )
 
                 if is_not_covered:
-                    freq = 'NC'
+                    freq = 'Not Covered' if d.get('source_insurer') == 'cigna' else 'NC'
                     pct  = '0%'
                     deductible = 'N/A'
                     age  = ''
@@ -1320,18 +2180,29 @@ def _build_benefit_table(d):
 
                     AGE_LIMIT_CODES = {'D1206', 'D1351', 'D1510', 'D8010', 'D8090'}
                     raw_age = str(p.get('age_limit', '')).strip()
-                    if code in AGE_LIMIT_CODES:
+                    if code in AGE_LIMIT_CODES or d.get('source_insurer') == 'cigna':
                         m = re.search(r'(\d+)\s*[-–]\s*(\d+)', raw_age)
                         if m:
                             age = m.group(2)
                         else:
                             m2 = re.search(r'under\s*(\d+)', raw_age, re.IGNORECASE)
-                            age = m2.group(1) if m2 else raw_age
+                            m3 = re.search(
+                                r'(?:exclude|excluded)\s+after\s+age\s*(\d+)',
+                                raw_age,
+                                re.IGNORECASE,
+                            )
+                            age = (
+                                m2.group(1) if m2 else
+                                m3.group(1) if m3 else
+                                raw_age
+                            )
                     else:
                         age = ''
 
-                    if code in HISTORY_CODES:
-                        hist_raw = p.get('late_date_of_service', 'NH') or 'NH'
+                    if code in HISTORY_CODES or d.get('source_insurer') == 'cigna':
+                        hist_raw = p.get('late_date_of_service', 'NH')
+                        if not hist_raw:
+                            hist_raw = '-' if d.get('source_insurer') == 'cigna' else 'NH'
                         hist_str = str(hist_raw).strip()
                         m1 = re.search(r'(\d{4})-(\d{2})-(\d{2})', hist_str)
                         m2 = re.search(r'(\d{2})/(\d{2})/(\d{2})$', hist_str)
@@ -1349,12 +2220,34 @@ def _build_benefit_table(d):
                     else:
                         hist = ''
 
+                if d.get('source_insurer') == 'cigna':
+                    if str(freq).strip() in ('', '—'):
+                        freq = '-'
+                    if str(pct).strip() in ('', '—'):
+                        pct = '-'
+                    if str(deductible).strip() in ('', '—'):
+                        deductible = '-'
+                    if str(age).strip() in ('', '—'):
+                        age = '-'
+                    if str(hist).strip() in ('', '—'):
+                        hist = '-'
+
                 hist_color = DARK
             else:
-                freq = pct = deductible = age = hist = ''
+                if d.get('source_insurer') == 'cigna':
+                    freq = pct = deductible = age = hist = '-'
+                else:
+                    freq = pct = deductible = age = hist = ''
                 hist_color = GREY
 
-            rows.append([label, freq, pct, deductible, age, hist])
+            rows.append([
+                _table_text(label,      col_w[0] - 8, 'LEFT',   DARK),
+                _table_text(freq,       col_w[1] - 8, 'CENTER', TEAL),
+                _table_text(pct,        col_w[2] - 8, 'CENTER', TEAL),
+                _table_text(deductible, col_w[3] - 8, 'CENTER', TEAL),
+                _table_text(age,        col_w[4] - 8, 'CENTER', TEAL),
+                _table_text(hist,       col_w[5] - 8, 'CENTER', hist_color),
+            ])
             bg = colors.HexColor('#f8fcfe') if alt else WHITE
             xstyle += [
                 ('BACKGROUND', (0, ri), (-1, ri), bg),
@@ -1432,7 +2325,7 @@ def generate_new_plan_pdf(
     Parameters
     ----------
     portal_raw   : full Portal JSON (contains metlife_data, benefit_coverage …)
-    denticon_raw : full Denticon JSON (contains denticon_data, and/or benefit_coverage)
+    denticon_raw : Denticon JSON used only for the Office Information block
     ins_override : optional dict from the UI modal:
                      'insName'      → overrides ins_name  (Insurance Name on PDF)
                      'feeSchedule'  → overrides fee_schedule
@@ -1458,12 +2351,14 @@ def generate_new_plan_pdf(
 
         if rel:
             data['relationship'] = rel
-            # Recalculate family ded with the corrected relationship
-            data['family_ded'] = _family_deductible_v2(
-                fam_total_raw   = data.get('family_ded',  ''),
-                indiv_total_raw = data.get('indiv_ded',   ''),
-                relationship    = rel,
-            )
+            # Cigna must reflect only a family accumulator explicitly returned
+            # by the selected network.
+            if data.get('source_insurer') != 'cigna':
+                data['family_ded'] = _family_deductible_v2(
+                    fam_total_raw   = data.get('family_ded',  ''),
+                    indiv_total_raw = data.get('indiv_ded',   ''),
+                    relationship    = rel,
+                )
             print(f"[override] relationship → {rel}")
 
     print("FINAL DATA (after overrides):")

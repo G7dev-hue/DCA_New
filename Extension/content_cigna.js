@@ -264,13 +264,86 @@ const getVal = (selector) => document.querySelector(`[data-test-id="${selector}"
 
 // ── Code lists ─────────────────────────────────────────────────────────────
 const PROCEDURE_CODES = [
-    "D0120", "D0180", "D0140", "D0150", "D0274", "D0210", "D0330",
-    "D0220", "D0364", "D0431", "D1110", "D1120", "D1206", "D1351",
-    "D1510", "D2391", "D2740", "D2950", "D2962", "D6750", "D5110",
-    "D9110", "D9222", "D9230", "D9243", "D9310", "D9944", "D4341",
-    "D4355", "D4346", "D4910", "D4381", "D4260", "D4249", "D3310",
-    "D3330", "D7140", "D7210", "D7240", "D7953", "D6010", "D6056"
+    "D0180", "D0120", "D0140", "D0150",
+    "D0210", "D0220", "D0230", "D0240", "D0274", "D0330", "D0364", "D0431",
+    "D1510", "D1110", "D1120", "D1206", "D1351",
+    "D2140", "D2331", "D2391", "D2620", "D2740", "D2950", "D2962", "D2991",
+    "D3347", "D3310", "D3330",
+    "D4260", "D4249", "D4341", "D4355", "D4381", "D4346", "D4910",
+    "D5860", "D5110", "D5740", "D5982",
+    "D6194", "D6010", "D6056", "D6065",
+    "D6245", "D6750",
+    "D7259", "D7140", "D7210", "D7240", "D7953",
+    "D8010", "D8080", "D8090",
+    "D9430", "D9110", "D9222", "D9230", "D9239", "D9243", "D9310", "D9944"
 ];
+
+const CIGNA_VALID_CONTEXT_VALUES = {
+    tooth: [
+        ...Array.from({ length: 32 }, (_, index) => String(index + 1)),
+        ...Array.from({ length: 32 }, (_, index) => String(index + 51)),
+        ..."ABCDEFGHIJKLMNOPQRST".split("").map(letter => `${letter}S`),
+        ..."ABCDEFGHIJKLMNOPQRST".split("")
+    ],
+    arch: ["UA", "LA"],
+    quadrant: ["LR", "LL", "UR", "UL"]
+};
+const CIGNA_DEFAULT_CONTEXT = { tooth: "3", arch: "UA", quadrant: "LR" };
+// Do not infer "number of payable D4341 quads" from context probes. A single
+// quadrant response only proves that context is valid for coverage lookup.
+const CIGNA_ALL_QUADRANT_CONTEXT_CODES = new Set([]);
+const CIGNA_CONTEXT_BY_CODE = {
+    D1351: { tooth: "3" },
+    D1510: { quadrant: "LR" },
+    D2140: { tooth: "3" },
+    D2331: { tooth: "8" },
+    D2391: { tooth: "3" },
+    D2620: { tooth: "3" },
+    D2740: { tooth: "3" },
+    D2950: { tooth: "3" },
+    D2962: { tooth: "8" },
+    D2991: { tooth: "3" },
+    D3347: { tooth: "4" },
+    D3310: { tooth: "8" },
+    D3330: { tooth: "3" },
+    D4260: { quadrant: "LR" },
+    D4249: { tooth: "3" },
+    D4341: { quadrant: "LR" },
+    D4381: { tooth: "3" },
+    D5860: { arch: "UA" },
+    D5110: { arch: "UA" },
+    D5740: { arch: "UA" },
+    D5982: { arch: "UA" },
+    D6194: { tooth: "3" },
+    D6010: { tooth: "3" },
+    D6056: { tooth: "3" },
+    D6065: { tooth: "3" },
+    D6245: { tooth: "3" },
+    D6750: { tooth: "3" },
+    D7259: { tooth: "17" },
+    D7140: { tooth: "3" },
+    D7210: { tooth: "3" },
+    D7240: { tooth: "17" },
+    D7953: { tooth: "3" }
+};
+const CIGNA_CONTEXT_VARIANTS_BY_CODE = {
+    D1351: [
+        { tooth: "3", _context_reason: "permanent_molar_test" },
+        { tooth: "8", _context_reason: "permanent_non_molar_test" }
+    ],
+    /*
+    D4341 all-quadrant probing is intentionally disabled. It can show which
+    queried quadrants return coverage, but it does not prove the plan's
+    same-visit or maximum payable quadrant rule.
+    D4341: [
+        { quadrant: "LR", _context_reason: "all_quadrants_test" },
+        { quadrant: "LL", _context_reason: "all_quadrants_test" },
+        { quadrant: "UR", _context_reason: "all_quadrants_test" },
+        { quadrant: "UL", _context_reason: "all_quadrants_test" }
+    ]
+    */
+};
+const CIGNA_FORCED_CONTEXT_CODES = new Set(Object.keys(CIGNA_CONTEXT_VARIANTS_BY_CODE));
 
 // ══════════════════════════════════════════════════════════════════════════
 // PAGE LOCK
@@ -606,7 +679,10 @@ async function clickAutocompleteSuggestion(codeStr, timeout = 7000) {
             Array.from(document.querySelectorAll('li,[class*="option"],[class*="suggestion"]'))
                 .find(el => el.innerText?.trim().startsWith(codeStr) && el.offsetParent !== null)
         );
-        if (s) { s.click(); await sleep(700); return true; }
+        if (s) {
+            try { console.log(`Cigna: Autocomplete matched "${(s.innerText||'').trim()}" for ${codeStr}`); } catch (_) {}
+            s.click(); await sleep(700); return true;
+        }
         await sleep(200);
     }
     console.warn(`Cigna: No autocomplete for ${codeStr}`);
@@ -676,6 +752,7 @@ async function enterBatch(codes) {
     console.log(`Cigna: Entering batch [${codes.join(', ')}]`);
     for (let i = 0; i < codes.length; i++) {
         const code = codes[i];
+        console.log(`Cigna: Searching code ${code} (${i + 1}/${codes.length})`);
         const input = await waitFor(() => {
             const inp = findEmptyProcedureInput();
             return (inp && inp.offsetParent !== null) ? inp : null;
@@ -1406,6 +1483,42 @@ const DESCRIPTION_CONCURRENCY = 8;
 const BENEFIT_REQUEST_CONCURRENCY = 3;
 const PROCEDURES_PER_REQUEST = 10;
 
+// These are local crawler settings.  Do not try to read a same-named global in
+// their initializer: `const value = typeof value ...` throws before the crawl
+// starts because the local binding is still in its temporal dead zone.
+const CONTEXT_REQUEST_CONCURRENCY = 4;
+const INCLUDE_RAW_CONTEXT_RESULTS = false;
+
+// Ensure commonly referenced collections exist so the crawler doesn't ReferenceError
+if (typeof STATIC_CODES === 'undefined') var STATIC_CODES = [];
+if (typeof SPECIAL_CODES === 'undefined') var SPECIAL_CODES = [];
+if (typeof AGE_GATED_LIST === 'undefined') var AGE_GATED_LIST = [];
+if (typeof QUADRANT_CODES === 'undefined') var QUADRANT_CODES = {};
+if (typeof TOOTH_CODES === 'undefined') var TOOTH_CODES = {};
+
+// Lightweight angularType fallback when running outside Angular test environment
+if (typeof angularType === 'undefined') {
+    async function angularType(input, value) {
+        try {
+            input.focus();
+            input.value = value;
+            input.dispatchEvent(new InputEvent('input', { bubbles: true }));
+            input.dispatchEvent(new Event('change', { bubbles: true }));
+            await sleep(50);
+        } catch (e) { /* noop */ }
+    }
+}
+
+console.info('Cigna: Initialized defaults for missing globals', {
+    CONTEXT_REQUEST_CONCURRENCY,
+    INCLUDE_RAW_CONTEXT_RESULTS,
+    STATIC_CODES: STATIC_CODES.length,
+    SPECIAL_CODES: SPECIAL_CODES.length,
+    AGE_GATED_LIST: AGE_GATED_LIST.length,
+    QUADRANT_CODES: Object.keys(QUADRANT_CODES).length,
+    TOOTH_CODES: Object.keys(TOOTH_CODES).length
+});
+
 function normalizeContextValue(value) {
     const normalized = String(value ?? "").trim().toUpperCase();
     return normalized === "N/A" ? "" : normalized;
@@ -1415,6 +1528,145 @@ function getContextRequirements(validationMessage) {
     const message = String(validationMessage || "");
     if (!/(INVALID|MISSING|REQUIRED)/i.test(message)) return [];
     return ["tooth", "arch", "quadrant"].filter(field => new RegExp(field, "i").test(message));
+}
+
+function getRequiredContextFields(validationMessage) {
+    return new Set(getContextRequirements(validationMessage));
+}
+
+function contextValueIsValid(field, value) {
+    return CIGNA_VALID_CONTEXT_VALUES[field]?.includes(normalizeContextValue(value));
+}
+
+function normalizeContextTask(task) {
+    return {
+        code: normalizeProcedureCode(task?.code),
+        desc: String(task?.desc || ""),
+        tooth: normalizeContextValue(task?.tooth),
+        arch: normalizeContextValue(task?.arch),
+        quadrant: normalizeContextValue(task?.quadrant)
+    };
+}
+
+function contextKey(task) {
+    const normalized = normalizeContextTask(task);
+    return [normalized.code, normalized.tooth, normalized.arch, normalized.quadrant].join("|");
+}
+
+function applyDefaultContext(task, requiredFields = []) {
+    const code = normalizeProcedureCode(task?.code);
+    const configured = CIGNA_CONTEXT_BY_CODE[code] || {};
+    const fields = new Set([...Object.keys(configured), ...requiredFields]);
+    const next = normalizeContextTask(task);
+    const applied = [];
+    for (const field of fields) {
+        if (!["tooth", "arch", "quadrant"].includes(field)) continue;
+        const value = configured[field] || CIGNA_DEFAULT_CONTEXT[field];
+        if (!contextValueIsValid(field, value)) continue;
+        if (!next[field]) {
+            next[field] = value;
+            applied.push(`${field}:${value}`);
+        }
+    }
+    return applied.length ? { ...next, _context_defaults_applied: applied } : next;
+}
+
+function contextDebugEntry(task) {
+    const normalized = normalizeContextTask(task);
+    const fields = ["tooth", "arch", "quadrant"].filter(field => normalized[field]);
+    return {
+        code: normalized.code,
+        fields,
+        tooth: normalized.tooth || "",
+        arch: normalized.arch || "",
+        quadrant: normalized.quadrant || ""
+    };
+}
+
+function procedureDebugEntry(task) {
+    const context = contextDebugEntry(task);
+    return {
+        code: context.code,
+        description: String(task?.desc || ""),
+        tooth: context.tooth,
+        arch: context.arch,
+        quadrant: context.quadrant
+    };
+}
+
+function logProcedureLookupError(stage, procedures, error, attempt = 0) {
+    console.error(`Cigna: ${stage} failed`, {
+        procedures: (Array.isArray(procedures) ? procedures : [procedures]).map(procedureDebugEntry),
+        attempt: attempt + 1,
+        status: error?.status || 0,
+        message: String(error?.message || error || "Unknown error")
+    });
+}
+
+function expandContextTask(task, requiredFields) {
+    const normalized = normalizeContextTask(task);
+    const variants = CIGNA_CONTEXT_VARIANTS_BY_CODE[normalized.code];
+    if (variants?.length) {
+        return variants.map(variant => applyDefaultContext(
+            { ...normalized, ...variant },
+            [...requiredFields, ...Object.keys(variant).filter(key => ["tooth", "arch", "quadrant"].includes(key))]
+        ));
+    }
+    if (CIGNA_ALL_QUADRANT_CONTEXT_CODES.has(normalized.code)) {
+        return CIGNA_VALID_CONTEXT_VALUES.quadrant.map(quadrant =>
+            applyDefaultContext({ ...normalized, quadrant }, [...requiredFields, "quadrant"]));
+    }
+    return [applyDefaultContext(task, [...requiredFields])];
+}
+
+async function fetchContextBatch(batch) {
+    const data = await cignaMessage("benefits", { procedures: batch });
+    const benefits = Array.isArray(data?.dentalBenefits) ? data.dentalBenefits : [];
+    const metadata = Array.isArray(data?.containerMetadata) ? data.containerMetadata : [];
+    return benefits.map((item, index) => ({
+        item,
+        index,
+        tag: parseContainerTagKey(metadata[index]?.tagKey)
+    }));
+}
+
+function matchBatchResponses(batch, responseItems, stats) {
+    const byKey = new Map(batch.map(task => [contextKey(task), normalizeContextTask(task)]));
+    const byCode = new Map();
+    for (const task of batch) {
+        const normalized = normalizeContextTask(task);
+        if (!byCode.has(normalized.code)) byCode.set(normalized.code, []);
+        byCode.get(normalized.code).push(normalized);
+    }
+    const matchedKeys = new Set();
+    const matches = [];
+    for (const response of Array.isArray(responseItems) ? responseItems : []) {
+        const item = response.item || response;
+        const returnedCode = normalizeProcedureCode(item?.procedure);
+        const tag = response.tag || {};
+        let task = null;
+        const tagKey = contextKey(tag);
+        if (tag.code && byKey.has(tagKey)) task = byKey.get(tagKey);
+        if (!task && returnedCode && (byCode.get(returnedCode) || []).length === 1) {
+            task = byCode.get(returnedCode)[0];
+        }
+        if (!task && batch[response.index]) {
+            const fallback = normalizeContextTask(batch[response.index]);
+            if (!returnedCode || returnedCode === fallback.code) {
+                stats.positional_fallback_matches++;
+                task = fallback;
+            }
+        }
+        if (!task || (returnedCode && returnedCode !== task.code)) continue;
+        const key = contextKey(task);
+        if (matchedKeys.has(key)) continue;
+        matchedKeys.add(key);
+        matches.push({ task, item });
+    }
+    return {
+        matches,
+        missing: batch.map(normalizeContextTask).filter(task => !matchedKeys.has(contextKey(task)))
+    };
 }
 
 function uniqueStrings(values) {
@@ -1538,7 +1790,9 @@ async function resolveContextQueue(requested, initialByCode, run, stats, progres
         const initial = initialByCode.get(request.code);
         const fields = getRequiredContextFields(initial?.validationMsg);
         requiredByCode.set(request.code, new Set(fields));
-        if (fields.size) expandContextTask({ ...request, depth: 0 }, fields).forEach(schedule);
+        if (fields.size || CIGNA_ALL_QUADRANT_CONTEXT_CODES.has(request.code) || CIGNA_FORCED_CONTEXT_CODES.has(request.code)) {
+            expandContextTask({ ...request, depth: 0 }, fields).forEach(schedule);
+        }
         else if (initial) resultByKey.set(contextKey(request), { task: normalizeContextTask(request), item: initial, classification: apiBoolean(initial.covered) ? "resolved_covered" : "resolved_not_covered", order: order++ });
     }
     while ([...queues.values()].some(queue => queue.length)) {
@@ -1561,6 +1815,9 @@ async function resolveContextQueue(requested, initialByCode, run, stats, progres
             try {
                 stats.context_benefit_requests++;
                 items = await fetchContextBatch(batch);
+            } catch (error) {
+                logProcedureLookupError("Context-specific procedure benefit lookup", batch, error);
+                throw error;
             } finally {
                 activeRequestCount--;
                 batch.forEach(task => run.activeKeys.delete(contextKey(task)));
@@ -1568,7 +1825,13 @@ async function resolveContextQueue(requested, initialByCode, run, stats, progres
             const matched = matchBatchResponses(batch, items, stats);
             for (const task of [...matched.missing]) {
                 stats.missing_response_retries++;
-                const retryItems = await fetchContextBatch([task]);
+                let retryItems;
+                try {
+                    retryItems = await fetchContextBatch([task]);
+                } catch (error) {
+                    logProcedureLookupError("Context-specific procedure retry", task, error);
+                    throw error;
+                }
                 const retryMatch = matchBatchResponses([task], retryItems, stats);
                 if (retryMatch.matches.length) {
                     matched.matches.push(...retryMatch.matches);
@@ -1647,7 +1910,8 @@ function buildAggregatedProcedure(request, initial, records, requiredFields, sta
     const coveredCount = resolved.filter(record => record.classification === "resolved_covered").length;
     const notCoveredCount = resolved.length - coveredCount;
     const initialFields = getRequiredContextFields(initial?.validationMsg);
-    const scope = !initialFields.size ? "context_independent" : coveredCount && notCoveredCount ? "partial" : coveredCount ? "all" : resolved.length ? "none" : "unresolved";
+    const forcedContext = CIGNA_ALL_QUADRANT_CONTEXT_CODES.has(request.code) || CIGNA_FORCED_CONTEXT_CODES.has(request.code);
+    const scope = !initialFields.size && !forcedContext ? "context_independent" : coveredCount && notCoveredCount ? "partial" : coveredCount ? "all" : resolved.length ? "none" : "unresolved";
     const uniqueContext = field => [...new Set(resolved.map(record => record.task[field]).filter(Boolean))];
     const outcomeGroups = new Map();
     for (const record of resolved) {
@@ -1712,6 +1976,62 @@ function completeAccumulationRecords(coverage, benefitName) {
     return dedupeAccumulationRecords(coverageServiceRecords(coverage, benefitName));
 }
 
+function selectedCoverageNetwork(coverage) {
+    const network = coverage?.coverageDetails?.networkDetails || {};
+    return {
+        id: apiValue(network.superNetworkId || network.networkId, ""),
+        name: apiValue(network.networkName, ""),
+        type: apiValue(network.networkType, ""),
+        tier: apiValue(network.tier, "")
+    };
+}
+
+function normalizedNetworkName(value) {
+    return normalizeComparableScalar(value).replace(/\s+NETWORK$/, "").trim();
+}
+
+function matchesSelectedCoverageNetwork(record, selected) {
+    const selectedId = normalizeComparableScalar(selected?.id);
+    const recordId = normalizeComparableScalar(record?.networkId || record?.network_id);
+    if (selectedId) return recordId === selectedId;
+    const selectedName = normalizedNetworkName(selected?.name);
+    const recordName = normalizedNetworkName(record?.networkName || record?.network);
+    return Boolean(selectedName) && recordName === selectedName;
+}
+
+function selectedCoverageRecords(records, selected) {
+    const valid = (Array.isArray(records) ? records : []).filter(Boolean);
+    if (!selected?.id && !selected?.name) return valid;
+    return valid.filter(record => matchesSelectedCoverageNetwork(record, selected));
+}
+
+function deductibleApplicabilityFromCoverage(coverage) {
+    const selected = selectedCoverageNetwork(coverage);
+    const records = selectedCoverageRecords(
+        coverageServiceRecords(coverage, "deductible"),
+        selected
+    );
+    const classCodes = uniqueStrings(records.flatMap(record =>
+        String(record.classCode || "").split(",").map(value => value.trim()).filter(Boolean)));
+    const classDescriptions = uniqueStrings(records.flatMap(record =>
+        String(record.classDesc || "").split(",").map(value => value.trim()).filter(Boolean)));
+    const descriptions = classDescriptions.join(",").toUpperCase();
+    const hasCode = code => classCodes.includes(code);
+    return {
+        selected_network: selected,
+        has_selected_network_deductible: records.length > 0,
+        class_codes: classCodes,
+        class_descriptions: classDescriptions,
+        diagnostic: hasCode("1") || descriptions.includes("DIAGNOSTIC"),
+        preventive: hasCode("1") || descriptions.includes("PREVENTIVE"),
+        basic: hasCode("2") || descriptions.includes("BASIC RESTORATIVE"),
+        major: hasCode("3") || descriptions.includes("MAJOR RESTORATIVE"),
+        orthodontic: hasCode("4") || descriptions.includes("ORTHODONT"),
+        periodontal: hasCode("6") || descriptions.includes("PERIODONTAL"),
+        implants: hasCode("9") || descriptions.includes("IMPLANT")
+    };
+}
+
 function applyCoverageApi(baseData, coverage) {
     const patient = coverage.patientDetails || {};
     const subscriber = coverage.subscriberDetails || {};
@@ -1757,7 +2077,8 @@ function applyCoverageApi(baseData, coverage) {
     };
     baseData.financials = {
         maximum_records: completeAccumulationRecords(coverage, "maximum"),
-        deductible_records: completeAccumulationRecords(coverage, "deductible")
+        deductible_records: completeAccumulationRecords(coverage, "deductible"),
+        deductible_applicability: deductibleApplicabilityFromCoverage(coverage)
     };
     baseData.coinsurance = dedupeCoinsuranceRecords((coverage.planBenefits?.services || []).flatMap(service => {
         const records = service.benefits?.coinsurance?.accumulations;
@@ -1843,6 +2164,9 @@ function assertPatientConsistency(domData, coverage) {
 async function fetchBenefitBatch(batch, found, failures, stats, attempt = 0) {
     try {
         stats.benefit_http_requests++;
+        console.info("Cigna: Looking up procedure benefits", {
+            procedures: batch.map(procedureDebugEntry), attempt: attempt + 1
+        });
         const data = await cignaMessage("benefits", { procedures: batch });
         const omitted = matchBenefitResponse(batch, data, found, failures, stats);
         if (omitted.length) {
@@ -1851,6 +2175,7 @@ async function fetchBenefitBatch(batch, found, failures, stats, attempt = 0) {
             throw Object.assign(new Error("Cigna response omitted requested procedures."), { status: 422 });
         }
     } catch (error) {
+        logProcedureLookupError("Procedure benefit lookup", batch, error, attempt);
         if (error.status === 401 || error.status === 403) throw error;
         if (error.status === 429 && attempt < 3) {
             stats.retry_http_requests++;
@@ -1868,7 +2193,14 @@ async function fetchBenefitBatch(batch, found, failures, stats, attempt = 0) {
             const middle = Math.ceil(batch.length / 2);
             await fetchBenefitBatch(batch.slice(0, middle), found, failures, stats);
             await fetchBenefitBatch(batch.slice(middle), found, failures, stats);
-        } else for (const item of batch) failures[item.code] = String(error.message || "Benefit lookup failed.").slice(0, 300);
+        } else for (const item of batch) {
+            failures[item.code] = String(error.message || "Benefit lookup failed.").slice(0, 300);
+            console.error("Cigna: Procedure benefit lookup ultimately failed", {
+                procedure: procedureDebugEntry(item),
+                status: error.status || 0,
+                message: failures[item.code]
+            });
+        }
     }
 }
 
@@ -1902,6 +2234,9 @@ function validateCignaNormalization(data) {
 }
 
 async function crawlProcedureCodes(baseData, run) {
+    run.scheduledKeys = run.scheduledKeys || new Set();
+    run.activeKeys = run.activeKeys || new Set();
+    run.completedKeys = run.completedKeys || new Set();
     const patientDOB = baseData.patient.dob !== "N/A" ? baseData.patient.dob : null;
     baseData.procedures.age_gate = {
         patient_dob: patientDOB || "not found",
@@ -1913,9 +2248,11 @@ async function crawlProcedureCodes(baseData, run) {
     const startedAt = Date.now();
     const stats = {
         coverage_http_requests: 1, description_http_requests: 0, benefit_http_requests: 0,
-        retry_http_requests: 0, split_http_requests: 0, missing_response_retries: 0,
-        duplicate_requests_skipped: 0, duplicate_responses_merged: 0,
-        positional_fallback_matches: 0, maximum_concurrency_observed: 0, duration_ms: 0
+        context_benefit_requests: 0, retry_http_requests: 0, split_http_requests: 0,
+        missing_response_retries: 0, duplicate_requests_skipped: 0, duplicate_responses_merged: 0,
+        positional_fallback_matches: 0, context_defaults_applied: 0, context_resolution_successes: 0,
+        context_resolution_unresolved: 0, histories_deduplicated: 0,
+        maximum_concurrency_observed: 0, duration_ms: 0
     };
     setStatusThrottled("Resolving procedure descriptions", true);
     const cached = await new Promise(resolve => chrome.storage.local.get(PROCEDURE_CODES.map(code => `cigna_description_${code}`), resolve));
@@ -1924,11 +2261,21 @@ async function crawlProcedureCodes(baseData, run) {
         const saved = cached[`cigna_description_${code}`];
         if (saved?.code === code && saved.description) descriptions[code] = saved.description;
         else try { stats.description_http_requests++; descriptions[code] = (await cignaMessage("description", { code })).description || ""; }
-        catch (_) { descriptions[code] = ""; }
+        catch (error) {
+            descriptions[code] = "";
+            console.warn("Cigna: Procedure description lookup failed; continuing without a description", {
+                procedure: { code }, status: error?.status || 0, message: String(error?.message || error)
+            });
+        }
         setStatusThrottled(`Resolving procedure descriptions: ${++resolved}/${PROCEDURE_CODES.length}`);
     });
     if (run.cancelled || activeCignaRun !== run) throw new Error("Cigna crawl superseded by a newer run.");
-    const requested = PROCEDURE_CODES.map(code => ({ code, desc: descriptions[code], tooth: "", arch: "", quadrant: "" }));
+    const requested = PROCEDURE_CODES.map(code => applyDefaultContext({ code, desc: descriptions[code], tooth: "", arch: "", quadrant: "" }));
+    const contextDefaultsApplied = requested
+        .filter(item => item._context_defaults_applied?.length)
+        .map(contextDebugEntry);
+    stats.context_defaults_applied = contextDefaultsApplied.length;
+    if (contextDefaultsApplied.length) console.info("Cigna default procedure contexts:", contextDefaultsApplied);
     const found = new Map(), failures = {}, batches = [];
     for (let i = 0; i < requested.length; i += PROCEDURES_PER_REQUEST) batches.push(requested.slice(i, i + PROCEDURES_PER_REQUEST));
     let completedBatches = 0, activeRequests = 0;
@@ -1938,9 +2285,59 @@ async function crawlProcedureCodes(baseData, run) {
         try { await fetchBenefitBatch(batch, found, failures, stats); } finally { activeRequests--; completedBatches++; }
     });
     if (run.cancelled || activeCignaRun !== run) throw new Error("Cigna crawl superseded by a newer run.");
+    const contextRequests = requested.filter(req =>
+        getContextRequirements(found.get(req.code)?.validationMsg).length ||
+        CIGNA_ALL_QUADRANT_CONTEXT_CODES.has(req.code) ||
+        CIGNA_FORCED_CONTEXT_CODES.has(req.code));
+    const resolvedByCode = new Map();
+    let contextResolution = {
+        defaults_applied: contextDefaultsApplied,
+        attempted_codes: [],
+        resolved_codes: [],
+        unresolved_codes: []
+    };
+    if (contextRequests.length) {
+        contextResolution.attempted_codes = contextRequests.flatMap(req =>
+            expandContextTask(req, getRequiredContextFields(found.get(req.code)?.validationMsg)).map(contextDebugEntry));
+        try {
+            const debugList = contextRequests.map(req => {
+                const validation = found.get(req.code)?.validationMsg;
+                const required = getContextRequirements(validation);
+                const variants = expandContextTask(req, getRequiredContextFields(validation)).map(contextDebugEntry);
+                return { code: req.code, required, variants };
+            });
+            console.log('Cigna: Context resolution details for codes requiring input:', debugList);
+        } catch (e) { console.warn('Cigna: Failed to build context debug list', e); }
+        setStatusThrottled(`Resolving required tooth/arch/quadrant context: ${contextRequests.length} code(s)`, true);
+        const contextResult = await resolveContextQueue(
+            contextRequests,
+            found,
+            run,
+            stats,
+            (done, queued, active) => setStatusThrottled(`Resolving Cigna context: ${done} done, ${queued} queued, ${active} active`)
+        );
+        for (const req of contextRequests) {
+            const records = [...contextResult.resultByKey.values()]
+                .filter(record => record.task?.code === req.code);
+            const parsed = buildAggregatedProcedure(
+                req,
+                found.get(req.code),
+                records,
+                contextResult.requiredByCode.get(req.code) || new Set(),
+                stats
+            );
+            resolvedByCode.set(req.code, parsed);
+            if (parsed.api_details?.coverage_scope === "unresolved") contextResolution.unresolved_codes.push(req.code);
+            else contextResolution.resolved_codes.push(req.code);
+        }
+        stats.context_resolution_successes = contextResolution.resolved_codes.length;
+        stats.context_resolution_unresolved = contextResolution.unresolved_codes.length;
+        console.info("Cigna context resolution:", contextResolution);
+    }
     setStatusThrottled(`Finalizing ${PROCEDURE_CODES.length} procedure results`, true);
     const validationSummary = { tooth_required: [], arch_required: [], quadrant_required: [], multi_field_required: [] };
     const results = requested.map(req => {
+        if (resolvedByCode.has(req.code)) return resolvedByCode.get(req.code);
         const item = found.get(req.code);
         if (!item) return failedProcedure(req, failures[req.code]);
         const returnedCode = normalizeProcedureCode(item.procedure);
@@ -1955,7 +2352,7 @@ async function crawlProcedureCodes(baseData, run) {
     baseData.procedures.results = results;
     baseData.procedures.count = results.length;
     stats.duration_ms = Date.now() - startedAt;
-    baseData.procedures.api_meta = { request_stats: stats, validation_summary: validationSummary, failures };
+    baseData.procedures.api_meta = { request_stats: stats, validation_summary: validationSummary, context_resolution: contextResolution, failures };
     setStatusThrottled(`Procedure API complete: ${results.length}/${PROCEDURE_CODES.length}`, true);
 }
 
