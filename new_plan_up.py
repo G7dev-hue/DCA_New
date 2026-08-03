@@ -764,40 +764,48 @@ def _number_of_quads_d4341(procs):
 
 
 def _cigna_molars_only_sealants(procs):
-    """Temporary Cigna rule: covered D1351 is ambiguous; not covered is No."""
+    """Resolve D1351 using Cigna's molar and non-molar context probes."""
     p = (procs or {}).get('D1351') or {}
-    if p.get('_cigna_covered') is False:
-        return 'No'
-    if p.get('_cigna_covered') is True:
-        return 'AMBIG'
-
-    groups = ((p.get('api_details') or {}).get('context_groups') or [])
-    if not groups:
-        return '-'
+    covered_value = p.get('_cigna_covered')
+    groups = (
+        p.get('_cigna_context_groups')
+        or ((p.get('api_details') or {}).get('context_groups') or [])
+    )
 
     molars = {'1', '2', '3', '14', '15', '16', '17', '18', '19', '30', '31', '32'}
     covered_molar = False
     covered_non_molar = False
+    tested_molar = False
     tested_non_molar = False
 
     for group in groups:
-        covered = bool((group.get('outcome') or {}).get('covered'))
+        outcome = group.get('outcome') or {}
+        group_covered = outcome.get('covered') is True
         for context in group.get('contexts') or []:
-            tooth = str(context.get('tooth') or '').upper()
+            tooth = str(context.get('tooth') or '').upper().strip()
             if not tooth or tooth == 'N/A':
                 continue
-            is_molar = tooth in molars
-            if is_molar and covered:
-                covered_molar = True
-            elif not is_molar:
+            if tooth in molars:
+                tested_molar = True
+                if group_covered:
+                    covered_molar = True
+            else:
                 tested_non_molar = True
-                if covered:
+                if group_covered:
                     covered_non_molar = True
 
+    # A covered non-molar means sealants are not restricted to molars only.
     if covered_non_molar:
         return 'No'
+    # Covered molar plus a tested, non-covered non-molar proves molars-only.
     if covered_molar and tested_non_molar:
         return 'Yes'
+    # A valid overall not-covered result answers the business question No.
+    if covered_value is False:
+        return 'No'
+    # A covered result without both comparison contexts is insufficient.
+    if covered_value is True or tested_molar or tested_non_molar:
+        return '-'
     return '-'
 
 
@@ -1240,6 +1248,7 @@ def _normalize_cigna_portal(raw):
     deductible_applicability = _cigna_deductible_applicability(raw, network)
 
     normalized_procs = []
+    unresolved_codes = []
     for proc in results:
         code = str(proc.get('procedure_code', '')).upper().strip()
         if not code:
@@ -1260,6 +1269,8 @@ def _normalize_cigna_portal(raw):
                 and bool(re.search(r'invalid|missing|required', validation, re.IGNORECASE))
             )
         )
+        if unresolved_context and code != 'D5860':
+            unresolved_codes.append(code)
         matched_limitations = _cigna_matching_records(
             api_details.get('limitation_records'), network
         )
@@ -1345,6 +1356,8 @@ def _normalize_cigna_portal(raw):
             '_cigna_covered': covered,
             '_cigna_coverage_scope': coverage_scope,
             '_cigna_alternate_benefit': proc.get('alternate_benefit'),
+            '_cigna_context_groups': api_details.get('context_groups') or [],
+            '_cigna_lookup_resolved': not unresolved_context,
             '_cigna_class_code': class_code,
         })
 
@@ -1508,6 +1521,8 @@ def _normalize_cigna_portal(raw):
         'ortho_ded_used': ortho_ded.get('met') or '',
         'network_name': network.get('name') or '',
         'plan_renews': plan.get('plan_renews') or '',
+        'unresolved_codes': sorted(set(unresolved_codes)),
+        'procedure_result_count': len(results),
     }
     return normalized
 
@@ -1516,13 +1531,20 @@ def _apply_cigna_output_rules(data, normalized):
     """Apply Cigna-only meanings and mark unavailable portal values with '-'."""
     meta = normalized.get('_cigna_meta') or {}
     deductible_applicability = meta.get('deductible_applicability') or {}
-    missing_text = str(meta.get('missing_tooth') or '').lower()
-    if 'does not apply' in missing_text or 'not applicable' in missing_text:
+    missing_raw = str(meta.get('missing_tooth') or '').strip()
+    missing_text = missing_raw.lower()
+    if missing_text in ('', 'n/a', 'na', 'none', '-', '—'):
+        missing_tooth = '-'
+    elif (
+        'does not apply' in missing_text
+        or 'not applicable' in missing_text
+        or missing_text == 'no'
+    ):
         missing_tooth = 'No'
-    elif missing_text:
-        missing_tooth = 'Yes' if 'appl' in missing_text else ''
     else:
-        missing_tooth = ''
+        # An explicit date/end date or any affirmative clause value means the
+        # missing-tooth clause applies.
+        missing_tooth = 'Yes'
 
     waiting_value, waiting_months, applies_to = _cigna_waiting_period_values(
         meta.get('waiting_period')
@@ -1595,7 +1617,7 @@ def _apply_cigna_output_rules(data, normalized):
         'posterior_composite_downgrade': '-',
         'porcelain_posterior_downgrade': '-',
         'd2950_same_day_crown': '-',
-        'ortho_payment_frequency': '',
+        'ortho_payment_frequency': '-',
         'ortho_age_limit_llm': (
             '99' if str(meta.get('ortho_age') or '').strip().lower() in ('', 'n/a', 'na', 'none')
             else meta.get('ortho_age')
@@ -1606,26 +1628,75 @@ def _apply_cigna_output_rules(data, normalized):
         'd4910_d1110_share_freq': _cigna_same_frequency(
             data.get('procs') or {}, 'D4910', 'D1110'
         ),
-        'd4341_number_of_quads': '',
+        'd4341_number_of_quads': '-',
         'pre_auth': 'Recommended-$200',
     })
 
     procs = data.get('procs') or {}
-    # Cigna returns the exact phrase "Alternate benefit may apply" as
-    # alternate_benefit=True.  Only an affirmative portal value answers these
-    # questions; absence/false remains unknown rather than being treated as No.
     data['molars_only_sealants'] = _cigna_molars_only_sealants(procs)
-    if _cigna_has_alternate_benefit_phrase(procs.get('D2140')):
-        data['posterior_composite_downgrade'] = 'Yes'
-    if _cigna_has_alternate_benefit_phrase(procs.get('D2740')):
-        data['porcelain_posterior_downgrade'] = 'Yes'
 
+    # Business rule: the exact Cigna alternate-benefit phrase means Yes. A
+    # successfully resolved response without that phrase means No. Failed or
+    # unresolved lookups remain unknown.
+    for code, output_key in (
+        ('D2140', 'posterior_composite_downgrade'),
+        ('D2740', 'porcelain_posterior_downgrade'),
+    ):
+        proc = procs.get(code) or {}
+        if proc.get('_cigna_covered') is None:
+            data[output_key] = '-'
+        else:
+            data[output_key] = (
+                'Yes' if _cigna_has_alternate_benefit_phrase(proc) else 'No'
+            )
+
+    # Business truth table:
+    # D2950 not covered -> No; D2950 + D2740 covered -> Yes;
+    # D2950 covered but D2740 not covered -> No; unresolved -> unknown.
     d2950 = procs.get('D2950') or {}
     d2740 = procs.get('D2740') or {}
-    if d2950.get('_cigna_covered') is False:
+    d2950_covered = d2950.get('_cigna_covered')
+    d2740_covered = d2740.get('_cigna_covered')
+    if d2950_covered is False:
         data['d2950_same_day_crown'] = 'No'
-    elif d2950.get('_cigna_covered') is True and d2740.get('_cigna_covered') is True:
+    elif d2950_covered is True and d2740_covered is True:
         data['d2950_same_day_crown'] = 'Yes'
+    elif d2950_covered is True and d2740_covered is False:
+        data['d2950_same_day_crown'] = 'No'
+    else:
+        data['d2950_same_day_crown'] = '-'
+
+    # The PDF row represents either D1206 or D1208. Prefer a covered code. The
+    # high-level Cigna limitation response supplies a reliable D1208 fallback
+    # for older crawl files that did not include D1208 in detailed results.
+    d1206 = procs.get('D1206') or {}
+    d1208 = procs.get('D1208') or {}
+    fluoride = None
+    if d1206.get('_cigna_covered') is True:
+        fluoride = d1206
+    elif d1208.get('_cigna_covered') is True:
+        fluoride = dict(d1208)
+        if not str(fluoride.get('benefit_level') or '').strip():
+            fluoride['benefit_level'] = data.get('pct_prev') or '-'
+        if not str(fluoride.get('deductible') or '').strip():
+            fluoride['deductible'] = data.get('ded_prev') or '-'
+        if not str(fluoride.get('late_date_of_service') or '').strip():
+            # Older exports only provide the D1208 limitation, not service
+            # history. Display unknown rather than inventing "No History".
+            fluoride['late_date_of_service'] = '-'
+    elif d1206:
+        fluoride = d1206
+    elif d1208:
+        fluoride = d1208
+    if fluoride:
+        procs['_CIGNA_FLUORIDE_DISPLAY'] = fluoride
+
+    unresolved_codes = meta.get('unresolved_codes') or []
+    if unresolved_codes:
+        data['elig_notes'] = (
+            f"WARNING: Cigna benefit crawl incomplete - {len(unresolved_codes)} "
+            "procedure lookup(s) unresolved. Rerun before finalizing."
+        )
 
     # Cigna's over-denture-complete response is intentionally represented as
     # the requested zero-percent/N/A display, even when no usable lookup row
@@ -1635,8 +1706,8 @@ def _apply_cigna_output_rules(data, normalized):
 
     if data.get('chair_provider') in ('', '—'):
         data['chair_provider'] = '-'
-    if data.get('d4341_number_of_quads') == '—':
-        data['d4341_number_of_quads'] = ''
+    if data.get('d4341_number_of_quads') in ('', '—'):
+        data['d4341_number_of_quads'] = '-'
     return data
 
 
@@ -2403,15 +2474,30 @@ def _build_benefit_table(d):
             ]
 
         else:  # 'data'
-            if code and code in procs:
-                p = procs[code]
+            display_proc = None
+            if (
+                d.get('source_insurer') == 'cigna'
+                and label == 'Fluoride (D1206, D1208)'
+            ):
+                display_proc = procs.get('_CIGNA_FLUORIDE_DISPLAY')
+
+            if code and (code in procs or display_proc):
+                p = display_proc or procs[code]
                 freq_raw = str(p.get('frequency_limit', '')).upper()
                 is_not_covered = (
                     'NOT COVERED' in freq_raw
                     or str(p.get('benefit_level', '')).upper() == 'N/A'
                 )
+                is_unresolved_cigna = (
+                    d.get('source_insurer') == 'cigna'
+                    and code != 'D5860'
+                    and p.get('_cigna_covered') is None
+                )
 
-                if is_not_covered:
+                if is_unresolved_cigna:
+                    freq = pct = deductible = age = '-'
+                    hist = '-' if code in HISTORY_CODES else ''
+                elif is_not_covered:
                     freq = 'NOT COVERED' if d.get('source_insurer') == 'cigna' else 'NC'
                     pct  = '0%'
                     deductible = 'N/A'

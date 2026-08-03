@@ -380,6 +380,15 @@
             <label>Fee Schedule</label>
             <input type="text" id="modalFeeSchedule" placeholder="e.g. Metlife PPO">
         </div>
+        <div class="modal-field">
+            <label>Provider Network Status</label>
+            <select id="modalProviderNetworkStatus">
+                <option value="">— Select —</option>
+                <option value="PPO">PPO</option>
+                <option value="IN">IN</option>
+                <option value="OUT">OUT</option>
+            </select>
+        </div>
         <!-- ★ NEW FIELD: Relation to Subscriber ★ -->
         <div class="modal-field">
             <label>Relation to Subscriber</label>
@@ -799,6 +808,7 @@ function openInsuranceModal(reason) {
     document.getElementById('insModalReason').textContent = reason;
     document.getElementById('modalInsName').value         = '';
     document.getElementById('modalFeeSchedule').value     = '';
+    document.getElementById('modalProviderNetworkStatus').value = '';
     document.getElementById('modalRelation').value        = '';   // ★ reset dropdown
     document.getElementById('insOverlayModal').classList.add('active');
     document.getElementById('modalInsName').focus();
@@ -814,9 +824,10 @@ document.getElementById('insModalCancel').addEventListener('click', () => {
 document.getElementById('insModalConfirm').addEventListener('click', () => {
     const insName      = document.getElementById('modalInsName').value.trim();
     const feeSchedule  = document.getElementById('modalFeeSchedule').value.trim();
+    const providerNetworkStatus = document.getElementById('modalProviderNetworkStatus').value.trim();
     const relationship = document.getElementById('modalRelation').value.trim();   // ★
     document.getElementById('insOverlayModal').classList.remove('active');
-    if (_resolveModal) _resolveModal({ insName, feeSchedule, relationship });     // ★
+    if (_resolveModal) _resolveModal({ insName, feeSchedule, providerNetworkStatus, relationship });     // ★
 });
 
 /* ── Resolve insurance fields before PDF generation ── */
@@ -830,7 +841,7 @@ async function resolveInsuranceFields() {
 
     if (isRacine && !isOutNet) {
         /* ★ PATCH 3: Racine auto also carries empty relationship ★ */
-        return { insName: RACINE_INS_NAME, feeSchedule: RACINE_FEE_SCHEDULE, relationship: '' };
+        return { insName: RACINE_INS_NAME, feeSchedule: RACINE_FEE_SCHEDULE, providerNetworkStatus: '', relationship: '' };
     }
 
     const reason = isOutNet

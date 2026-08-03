@@ -16,7 +16,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional
-from new_plan import generate_new_plan_pdf
+from new_plan_up import generate_new_plan_pdf
 import uvicorn
 
 from compare_patients import match_insurance_plan
@@ -79,6 +79,7 @@ class PDFRequest(BaseModel):
 class InsOverride(BaseModel):
     insName:      Optional[str] = None
     feeSchedule:  Optional[str] = None
+    providerNetworkStatus: Optional[str] = None
     relationship: Optional[str] = None
 
 class NewPlanRequest(BaseModel):
