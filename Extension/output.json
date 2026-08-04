@@ -2,7 +2,7 @@
   "Extraction Metadata": {
     "Extractor": "content_dentaquest",
     "Version": "2.0.0-popup",
-    "Extracted At": "2026-08-04T09:23:36.149Z",
+    "Extracted At": "2026-08-04T10:08:15.745Z",
     "Portal": "https://providers.dentaquest.com",
     "Member Profile GUID": "Not found in DentaQuest response",
     "Network Context": "Not found in DentaQuest response",
@@ -70,51 +70,20 @@
     "Group Number": "972599",
     "Subgroup Name": "Dental-All Eligible Employees",
     "Subgroup Number": "972599",
-    "Fee Schedule": "Not provided (feeScheduleId is blank)",
-    "Insurance Address": "Not found in DentaQuest response",
-    "Insurance Phone": "Not found in DentaQuest response",
     "Provider Network Status": "Network found — Dental Health Alliance (DHA); in/out status not explicit",
     "Network Contract": "Dental Health Alliance (DHA)",
     "Network Contract Owner": "Dental Health Alliance (DHA)",
     "Patient Eff Date": "2025-01-01",
     "Patient Term Date": "No termination date (active)",
     "Starting Month of Plan Year": "January",
-    "Plan Year": "01/01/2026 - 12/31/2026",
-    "Payor ID": "Not found in DentaQuest response"
-  },
-  "Eligibility Notes": {
-    "Member Eligibility Status": "Active",
-    "Eligibility Status Last Updated": "2026-08-04 05:36:51.744475+0000",
-    "Date of Service": "2026-08-04",
-    "Coverage Level": "Employee + Child",
-    "Provider/Practitioner": "Anas Selman",
-    "Service Location": "Advanced Dental Care of Miller Square, 13840 SW 56th St, MIAMI, FL, 33175",
-    "Member Timely Status": "Timely",
-    "Missing Tooth Information": "Not covered",
-    "Coordination of Benefits": "No coordination-of-benefits records returned",
-    "Coordination of Benefits Records": [],
-    "Notes": "Eligibility is Active. Product is SL PPO GRP (PPO). Network is Dental Health Alliance (DHA). No current-member waiting period was found. Missing tooth field: Not covered."
+    "Plan Year": "01/01/2026 - 12/31/2026"
   },
   "Coverage and Maximums": {
-    "Yearly Maximum": "$2,000.00",
-    "Remaining": "$1,750.00",
-    "Individual Deductible Paid to Date": "$0.00",
-    "Individual Deductible Remaining": "$50.00",
-    "Family Deductible Paid to Date": "$0.00",
-    "Family Deductible Remaining": "$150.00",
-    "Deductible Applies to Preventive": "No — Not Applicable",
-    "Deductible Applies to Diagnostic": "No — Not Applicable",
     "Is there a Waiting Period": "No",
     "Period": "0 day(s); late entrant maximum 365 day(s)",
     "Applies to": "No classes for the current timely-member rule",
-    "Are Major Services Paid on Prep": "Not stated in plan response",
-    "Or Seat": "Not stated in plan response",
     "Does Missing Tooth Clause Apply?": "Yes — Not covered",
     "Dependent Age Limit": "Not found in DentaQuest response",
-    "Orthodontic Deductible": "Not Applicable",
-    "Orthodontic Deductible Paid to Date": "Not Applicable",
-    "Orthodontic Maximum": "$1,000.00",
-    "Orthodontic Maximum Paid to Date": "$321.00",
     "All Maximums and Deductibles": [
       {
         "benefitName": "Individual annual maximum (All Networks)",
@@ -147,257 +116,6 @@
     ]
   },
   "General Benefit Categories": {
-    "All Clinical History": {
-      "D0230": [
-        {
-          "Date of Service": "2026-01-27",
-          "Procedure Code": "D0230",
-          "Procedure Description": "Intraoral - periapical each additional radiographic image",
-          "Part of Mouth": "P / -- / -- / --",
-          "Tooth": "P",
-          "Arch": "--",
-          "Quadrant": "--",
-          "Surface": "--",
-          "Place of Treatment": "Office"
-        },
-        {
-          "Date of Service": "2025-07-15",
-          "Procedure Code": "D0230",
-          "Procedure Description": "Intraoral - periapical each additional radiographic image",
-          "Part of Mouth": "P / -- / -- / --",
-          "Tooth": "P",
-          "Arch": "--",
-          "Quadrant": "--",
-          "Surface": "--",
-          "Place of Treatment": "Office"
-        }
-      ],
-      "D1351": [
-        {
-          "Date of Service": "2025-07-15",
-          "Procedure Code": "D1351",
-          "Procedure Description": "Sealant - per tooth",
-          "Part of Mouth": "15 / UA / UL / O",
-          "Tooth": "15",
-          "Arch": "UA",
-          "Quadrant": "UL",
-          "Surface": "O",
-          "Place of Treatment": "Office"
-        },
-        {
-          "Date of Service": "2025-07-15",
-          "Procedure Code": "D1351",
-          "Procedure Description": "Sealant - per tooth",
-          "Part of Mouth": "18 / LA / LL / O",
-          "Tooth": "18",
-          "Arch": "LA",
-          "Quadrant": "LL",
-          "Surface": "O",
-          "Place of Treatment": "Office"
-        },
-        {
-          "Date of Service": "2025-07-15",
-          "Procedure Code": "D1351",
-          "Procedure Description": "Sealant - per tooth",
-          "Part of Mouth": "19 / LA / LL / O",
-          "Tooth": "19",
-          "Arch": "LA",
-          "Quadrant": "LL",
-          "Surface": "O",
-          "Place of Treatment": "Office"
-        },
-        {
-          "Date of Service": "2025-07-15",
-          "Procedure Code": "D1351",
-          "Procedure Description": "Sealant - per tooth",
-          "Part of Mouth": "30 / LA / LR / O",
-          "Tooth": "30",
-          "Arch": "LA",
-          "Quadrant": "LR",
-          "Surface": "O",
-          "Place of Treatment": "Office"
-        },
-        {
-          "Date of Service": "2025-07-15",
-          "Procedure Code": "D1351",
-          "Procedure Description": "Sealant - per tooth",
-          "Part of Mouth": "2 / UA / UR / O",
-          "Tooth": "2",
-          "Arch": "UA",
-          "Quadrant": "UR",
-          "Surface": "O",
-          "Place of Treatment": "Office"
-        },
-        {
-          "Date of Service": "2025-07-15",
-          "Procedure Code": "D1351",
-          "Procedure Description": "Sealant - per tooth",
-          "Part of Mouth": "31 / LA / LR / O",
-          "Tooth": "31",
-          "Arch": "LA",
-          "Quadrant": "LR",
-          "Surface": "O",
-          "Place of Treatment": "Office"
-        }
-      ],
-      "D0120": [
-        {
-          "Date of Service": "2026-01-27",
-          "Procedure Code": "D0120",
-          "Procedure Description": "Periodic oral evaluation - established patient",
-          "Part of Mouth": "-- / -- / -- / --",
-          "Tooth": "--",
-          "Arch": "--",
-          "Quadrant": "--",
-          "Surface": "--",
-          "Place of Treatment": "Office"
-        },
-        {
-          "Date of Service": "2025-07-15",
-          "Procedure Code": "D0120",
-          "Procedure Description": "Periodic oral evaluation - established patient",
-          "Part of Mouth": "-- / -- / -- / --",
-          "Tooth": "--",
-          "Arch": "--",
-          "Quadrant": "--",
-          "Surface": "--",
-          "Place of Treatment": "Office"
-        }
-      ],
-      "D8080": [
-        {
-          "Date of Service": "2025-01-01",
-          "Procedure Code": "D8080",
-          "Procedure Description": "comprehensive orthodontic treatment of the adolescent dentition",
-          "Part of Mouth": "-- / -- / -- / --",
-          "Tooth": "--",
-          "Arch": "--",
-          "Quadrant": "--",
-          "Surface": "--",
-          "Place of Treatment": "Office"
-        }
-      ],
-      "D1208": [
-        {
-          "Date of Service": "2026-01-27",
-          "Procedure Code": "D1208",
-          "Procedure Description": "topical application of fluoride – excluding varnish",
-          "Part of Mouth": "-- / -- / -- / --",
-          "Tooth": "--",
-          "Arch": "--",
-          "Quadrant": "--",
-          "Surface": "--",
-          "Place of Treatment": "Office"
-        },
-        {
-          "Date of Service": "2025-07-15",
-          "Procedure Code": "D1208",
-          "Procedure Description": "topical application of fluoride – excluding varnish",
-          "Part of Mouth": "-- / -- / -- / --",
-          "Tooth": "--",
-          "Arch": "--",
-          "Quadrant": "--",
-          "Surface": "--",
-          "Place of Treatment": "Office"
-        }
-      ],
-      "D0272": [
-        {
-          "Date of Service": "2025-07-15",
-          "Procedure Code": "D0272",
-          "Procedure Description": "Bitewings - two radiographic images",
-          "Part of Mouth": "-- / -- / -- / --",
-          "Tooth": "--",
-          "Arch": "--",
-          "Quadrant": "--",
-          "Surface": "--",
-          "Place of Treatment": "Office"
-        }
-      ],
-      "D0220": [
-        {
-          "Date of Service": "2026-01-27",
-          "Procedure Code": "D0220",
-          "Procedure Description": "Intraoral - periapical first radiographic image",
-          "Part of Mouth": "E / -- / -- / --",
-          "Tooth": "E",
-          "Arch": "--",
-          "Quadrant": "--",
-          "Surface": "--",
-          "Place of Treatment": "Office"
-        },
-        {
-          "Date of Service": "2025-07-15",
-          "Procedure Code": "D0220",
-          "Procedure Description": "Intraoral - periapical first radiographic image",
-          "Part of Mouth": "E / -- / -- / --",
-          "Tooth": "E",
-          "Arch": "--",
-          "Quadrant": "--",
-          "Surface": "--",
-          "Place of Treatment": "Office"
-        }
-      ],
-      "D8570": [
-        {
-          "Date of Service": "2025-10-01",
-          "Procedure Code": "D8570",
-          "Procedure Description": "Orthodontic Treatment",
-          "Part of Mouth": "N / -- / -- / --",
-          "Tooth": "N",
-          "Arch": "--",
-          "Quadrant": "--",
-          "Surface": "--",
-          "Place of Treatment": "Office"
-        },
-        {
-          "Date of Service": "2025-07-01",
-          "Procedure Code": "D8570",
-          "Procedure Description": "Orthodontic Treatment",
-          "Part of Mouth": "N / -- / -- / --",
-          "Tooth": "N",
-          "Arch": "--",
-          "Quadrant": "--",
-          "Surface": "--",
-          "Place of Treatment": "Office"
-        },
-        {
-          "Date of Service": "2025-04-01",
-          "Procedure Code": "D8570",
-          "Procedure Description": "Orthodontic Treatment",
-          "Part of Mouth": "N / -- / -- / --",
-          "Tooth": "N",
-          "Arch": "--",
-          "Quadrant": "--",
-          "Surface": "--",
-          "Place of Treatment": "Office"
-        }
-      ],
-      "D1120": [
-        {
-          "Date of Service": "2026-01-27",
-          "Procedure Code": "D1120",
-          "Procedure Description": "Prophylaxis - Child",
-          "Part of Mouth": "-- / -- / -- / --",
-          "Tooth": "--",
-          "Arch": "--",
-          "Quadrant": "--",
-          "Surface": "--",
-          "Place of Treatment": "Office"
-        },
-        {
-          "Date of Service": "2025-07-15",
-          "Procedure Code": "D1120",
-          "Procedure Description": "Prophylaxis - Child",
-          "Part of Mouth": "-- / -- / -- / --",
-          "Tooth": "--",
-          "Arch": "--",
-          "Quadrant": "--",
-          "Surface": "--",
-          "Place of Treatment": "Office"
-        }
-      ]
-    },
     "EXAMS": {
       "Perio Consult (D0180)": {
         "Status": "Covered",
@@ -529,8 +247,7 @@
         "Service History Count": 0,
         "Last Service Date": "No matching history found",
         "Service History": []
-      },
-      "Do D0120,D0150 Share a frequency with D0140?": "Yes — One of (D0120, D0140, D0145, D0150, D0160, D0170, D0180) per 6Month(s) Per patient, ."
+      }
     },
     "DIAGNOSTIC": {
       "Full Mouth Xray (D0210)": {
@@ -967,8 +684,7 @@
             "Place of Treatment": "Office"
           }
         ]
-      },
-      "Permanent Un-restored Molars only?": "Permanent molars only; an un-restored-tooth restriction is not stated"
+      }
     },
     "BASIC RESTORATIVE": {
       "Amalgam (D2140)": {
@@ -1051,8 +767,7 @@
         "Service History Count": 0,
         "Last Service Date": "No matching history found",
         "Service History": []
-      },
-      "Posterior composites downgraded to amalgam?": "No explicit posterior-composite downgrade language found"
+      }
     },
     "MAJOR RESTORATIVE": {
       "Porcelain Crown (D2740)": {
@@ -1128,9 +843,7 @@
         "Copay": "Not found in DentaQuest response",
         "Service History Count": 0,
         "Service History": []
-      },
-      "Porcelain crowns downgraded on posterior teeth": "Yes at plan level — explicit posterior alternate-benefit language appears on D2750, D2752, D2753; D2740 itself has no explicit narrative",
-      "Can D2950 be done same day as crown?": "Not stated in plan response"
+      }
     },
     "ENDODONTICS": {
       "Retreatment of previous root canal therapy - premolar (D3347)": {
@@ -1350,9 +1063,7 @@
         "Service History Count": 0,
         "Last Service Date": "No matching history found",
         "Service History": []
-      },
-      "Number of quads for the code D4341": "4 quadrant(s) listed (UL, UR, LL, LR); no per-day quadrant limit is stated",
-      "Do D4910 and D1110 share a frequency?": "Yes — One of (D1110, D1120, D4910) per 6Month(s) Per patient, ."
+      }
     },
     "REMOVABLE PROSTHO": {
       "Over Denture Complete (D5860)": {
@@ -1766,7 +1477,6 @@
         "Last Service Date": "No matching history found",
         "Service History": []
       },
-      "Payment Frequency": "Not provided by the plan; observed orthodontic claim dates include 2025-01-01, 2025-04-01, 2025-07-01, 2025-10-01 (claim cadence is not a payment-frequency guarantee)",
       "Ortho Age Limit": "25 years"
     },
     "ADJUNCTIVE": {

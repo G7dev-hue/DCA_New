@@ -592,11 +592,43 @@
         const clientInfo = subscriber.clientInformation || {};
         const preferredNetwork = preferredNetworkName(procedures);
 
-        const annualMax = buildFinancialRecord(leaves, dom, "annual_max");
-        const indDed = buildFinancialRecord(leaves, dom, "individual_deductible");
-        const famDed = buildFinancialRecord(leaves, dom, "family_deductible");
-        const orthoDed = buildFinancialRecord(leaves, dom, "ortho_deductible");
-        const orthoMax = buildFinancialRecord(leaves, dom, "ortho_maximum");
+        let maxDed = [];
+        if (Array.isArray(subscriber.maximumsAndDeductions)) maxDed = subscriber.maximumsAndDeductions;
+        else if (subscriber.maximumsAndDeductions && Array.isArray(subscriber.maximumsAndDeductions.accumulators)) maxDed = [subscriber.maximumsAndDeductions];
+        
+        const accumulators = maxDed.flatMap(m => m.accumulators || []);
+        const getAccum = (type, category) => accumulators.find(a => a.accumulatorType === type && a.categoryType === category) || {};
+        
+        const annualMaxObj = getAccum("Maximum", "General");
+        const indDedObj = getAccum("Deductible", "General");
+        const orthoDedObj = getAccum("Deductible", "Orthodontic");
+        const orthoMaxObj = getAccum("Maximum", "Orthodontic");
+
+        const annualMax = {
+            total: moneyValue(annualMaxObj.individualAmount ?? pickFinancialLeaf(leaves, { scope: [["annual", "yearly"], ["maximum", "max"]], exclude: ["ortho", "orthodont"] }, "total") ?? domValue(dom, ["Yearly Maximum", "Annual Maximum"])),
+            used: moneyValue(annualMaxObj.individualAmountUsed ?? pickFinancialLeaf(leaves, { scope: [["annual", "yearly"], ["maximum", "max"]], exclude: ["ortho", "orthodont"] }, "used") ?? domValue(dom, ["Yearly Maximum Paid to Date", "Annual Maximum Paid to Date", "Yearly Maximum Used", "Annual Maximum Used"])),
+            remaining: moneyValue(annualMaxObj.individualAmountRemaining ?? pickFinancialLeaf(leaves, { scope: [["annual", "yearly"], ["maximum", "max"]], exclude: ["ortho", "orthodont"] }, "remaining") ?? domValue(dom, ["Yearly Maximum Remaining", "Annual Maximum Remaining"]))
+        };
+        const indDed = {
+            total: moneyValue(indDedObj.individualAmount ?? pickFinancialLeaf(leaves, { scope: [["individual", "member"], ["deductible", "ded"]], exclude: ["family", "ortho", "orthodont"] }, "total") ?? domValue(dom, ["Individual Deductible"])),
+            used: moneyValue(indDedObj.individualAmountUsed ?? pickFinancialLeaf(leaves, { scope: [["individual", "member"], ["deductible", "ded"]], exclude: ["family", "ortho", "orthodont"] }, "used") ?? domValue(dom, ["Individual Deductible Paid to Date", "Individual Deductible Used"])),
+            remaining: moneyValue(indDedObj.individualAmountRemaining ?? pickFinancialLeaf(leaves, { scope: [["individual", "member"], ["deductible", "ded"]], exclude: ["family", "ortho", "orthodont"] }, "remaining") ?? domValue(dom, ["Individual Deductible Remaining"]))
+        };
+        const famDed = {
+            total: moneyValue(indDedObj.familyAmount ?? pickFinancialLeaf(leaves, { scope: [["family"], ["deductible", "ded"]], exclude: ["ortho", "orthodont"] }, "total") ?? domValue(dom, ["Family Deductible"])),
+            used: moneyValue(indDedObj.familyAmountUsed ?? pickFinancialLeaf(leaves, { scope: [["family"], ["deductible", "ded"]], exclude: ["ortho", "orthodont"] }, "used") ?? domValue(dom, ["Family Deductible Paid to Date", "Family Deductible Used"])),
+            remaining: moneyValue(indDedObj.familyAmountRemaining ?? pickFinancialLeaf(leaves, { scope: [["family"], ["deductible", "ded"]], exclude: ["ortho", "orthodont"] }, "remaining") ?? domValue(dom, ["Family Deductible Remaining"]))
+        };
+        const orthoDed = {
+            total: moneyValue(orthoDedObj.individualAmount ?? pickFinancialLeaf(leaves, { scope: [["ortho", "orthodont"], ["deductible", "ded"]], exclude: [] }, "total") ?? domValue(dom, ["Orthodontic Deductible", "Ortho Deductible"])),
+            used: moneyValue(orthoDedObj.individualAmountUsed ?? pickFinancialLeaf(leaves, { scope: [["ortho", "orthodont"], ["deductible", "ded"]], exclude: [] }, "used") ?? domValue(dom, ["Orthodontic Deductible Paid to Date", "Ortho Deductible Paid to Date"])),
+            remaining: moneyValue(orthoDedObj.individualAmountRemaining ?? pickFinancialLeaf(leaves, { scope: [["ortho", "orthodont"], ["deductible", "ded"]], exclude: [] }, "remaining") ?? domValue(dom, ["Orthodontic Deductible Remaining", "Ortho Deductible Remaining"]))
+        };
+        const orthoMax = {
+            total: moneyValue(orthoMaxObj.individualAmount ?? pickFinancialLeaf(leaves, { scope: [["ortho", "orthodont"], ["maximum", "max", "lifetime"]], exclude: ["deductible"] }, "total") ?? domValue(dom, ["Orthodontic Maximum", "Ortho Maximum", "Ortho Lifetime Maximum"])),
+            used: moneyValue(orthoMaxObj.individualAmountUsed ?? pickFinancialLeaf(leaves, { scope: [["ortho", "orthodont"], ["maximum", "max", "lifetime"]], exclude: ["deductible"] }, "used") ?? domValue(dom, ["Orthodontic Maximum Paid to Date", "Ortho Maximum Paid to Date"])),
+            remaining: moneyValue(orthoMaxObj.individualAmountRemaining ?? pickFinancialLeaf(leaves, { scope: [["ortho", "orthodont"], ["maximum", "max", "lifetime"]], exclude: ["deductible"] }, "remaining") ?? domValue(dom, ["Orthodontic Maximum Remaining", "Ortho Maximum Remaining"]))
+        };
 
         const eligibilityNotes = collectEligibilityNotes(state.supportingApiResponses, procedures);
         const allProcedureText = procedures.map(procedureText).join("\n");
@@ -606,34 +638,37 @@
         const planYearStart = mineValue(leaves, ["plan", "year", "start"], ["date", "month", "effective"])
             || domValue(dom, ["Starting Month of Plan Year", "Plan Year Start"]);
 
-        const deductiblePreventive = deriveDeductibleApplicability(
-            procedures.filter(item => ["preventative"].includes(item.category)),
-            leaves,
-            "prevent"
-        );
-        const deductibleDiagnostic = deriveDeductibleApplicability(
-            procedures.filter(item => ["exams", "diagnostic"].includes(item.category)),
-            leaves,
-            "diagnostic"
-        );
+        // DCA requested that we do NOT invent answers for provisions using heuristic text parsing.
+        // We will leave these blank ("N/A") unless they exist strictly as explicit properties in the API.
+        // For example, orthoAgeLimit exists in the API's orthoAgeLimitConfig.
+        /*
+        const deductiblePreventive = deriveDeductibleApplicability(procedures.filter(item => ["preventative"].includes(item.category)), leaves, "prevent");
+        const deductibleDiagnostic = deriveDeductibleApplicability(procedures.filter(item => ["exams", "diagnostic"].includes(item.category)), leaves, "diagnostic");
+        const waitingPeriod = deriveWaitingPeriod(procedures, subscriber.waitExempted, supportText);
+        */
+
+        let actualOrthoAgeLimit = "N/A";
+        if (benefitInfo.orthoAgeLimitConfig && benefitInfo.orthoAgeLimitConfig.length > 0) {
+            actualOrthoAgeLimit = String(benefitInfo.orthoAgeLimitConfig[0].minorMaxAge || benefitInfo.orthoAgeLimitConfig[0].irsMaxAge || "N/A");
+        }
 
         const provisions = {
-            deductible_applies_to_preventive: deductiblePreventive,
-            deductible_applies_to_diagnostic: deductibleDiagnostic,
-            waiting_period: deriveWaitingPeriod(procedures, subscriber.waitExempted, supportText),
-            waiting_period_applies_to: deriveWaitingAppliesTo(procedures),
-            major_services_paid_on_prep_or_seat: prepSeat || "N/A",
-            missing_tooth_clause: missingTooth || "N/A",
-            dependent_age_limit: dependentAge || "N/A",
-            d0120_d0150_share_frequency_with_d0140: sameFrequency(procMap, ["D0120", "D0150", "D0140"]),
-            permanent_unrestored_molars_only: sealantMolarsOnly(procMap.D1351),
-            posterior_composites_downgraded_to_amalgam: posteriorCompositeDowngrade(procMap),
-            porcelain_crowns_downgraded_on_posterior_teeth: porcelainCrownDowngrade(procMap.D2740),
-            d2950_same_day_as_crown: d2950SameDayCrown(procMap),
-            d4341_number_of_quads: numberOfQuads(procMap.D4341),
-            d4910_d1110_share_frequency: sameFrequency(procMap, ["D4910", "D1110"]),
-            ortho_payment_frequency: orthoPaymentFrequency(procMap),
-            ortho_age_limit: orthoAgeLimit(procMap)
+            deductible_applies_to_preventive: "N/A", // deductiblePreventive
+            deductible_applies_to_diagnostic: "N/A", // deductibleDiagnostic
+            waiting_period: "N/A", // waitingPeriod
+            waiting_period_applies_to: "N/A", // deriveWaitingAppliesTo(procedures)
+            major_services_paid_on_prep_or_seat: "N/A", // prepSeat || "N/A"
+            missing_tooth_clause: "N/A", // missingTooth || "N/A"
+            dependent_age_limit: "N/A", // dependentAge || "N/A"
+            d0120_d0150_share_frequency_with_d0140: "N/A", // sameFrequency(procMap, ["D0120", "D0150", "D0140"])
+            permanent_unrestored_molars_only: "N/A", // sealantMolarsOnly(procMap.D1351)
+            posterior_composites_downgraded_to_amalgam: "N/A", // posteriorCompositeDowngrade(procMap)
+            porcelain_crowns_downgraded_on_posterior_teeth: "N/A", // porcelainCrownDowngrade(procMap.D2740)
+            d2950_same_day_as_crown: "N/A", // d2950SameDayCrown(procMap)
+            d4341_number_of_quads: "N/A", // numberOfQuads(procMap.D4341)
+            d4910_d1110_share_frequency: "N/A", // sameFrequency(procMap, ["D4910", "D1110"])
+            ortho_payment_frequency: "N/A", // orthoPaymentFrequency(procMap)
+            ortho_age_limit: actualOrthoAgeLimit // natively from API, not heuristic!
         };
 
         const insuranceAddress = formatAddress(
@@ -648,8 +683,8 @@
             domValue(dom, ["Insurance Phone", "Carrier Phone", "Phone"])
         ]);
         const patientTermDate = firstMeaningful([
-            mineValue(leaves, ["termination", "date"], ["term", "end", "effective"]),
-            mineValue(leaves, ["eligibility", "end"], ["date", "term"]),
+            patient.isSubscriber ? subscriber.terminationDate : patient.record?.terminationDate,
+            patient.isSubscriber ? subscriber.eligibilityEndDate : patient.record?.eligibilityEndDate,
             domValue(dom, ["Patient Term Date", "Termination Date", "Coverage End Date"])
         ]);
         const ssn = firstMeaningful([
@@ -667,17 +702,21 @@
         ]);
 
         const groupName = firstMeaningful([
-            benefitInfo.subClientName,
             benefitInfo.clientName,
-            clientInfo.subClientName,
-            clientInfo.clientName
+            clientInfo.clientName,
+            benefitInfo.subClientName,
+            clientInfo.subClientName
         ]);
-        const groupNumber = firstMeaningful([
-            benefitInfo.subClientId,
-            clientInfo.subClientSpecifiedId,
-            benefitInfo.clientId,
-            clientInfo.clientSpecifiedId
-        ]);
+        
+        let mainGroupNum = firstMeaningful([benefitInfo.clientId, clientInfo.clientSpecifiedId]);
+        let subGroupNum = firstMeaningful([benefitInfo.subClientId, clientInfo.subClientSpecifiedId]);
+        
+        let finalGroupNumber = mainGroupNum || subGroupNum;
+        if (mainGroupNum && subGroupNum && mainGroupNum !== subGroupNum) {
+            finalGroupNumber = `${mainGroupNum}-${subGroupNum}`;
+        }
+        
+        const groupNumber = finalGroupNumber;
         const planName = firstMeaningful([
             benefitInfo.productName,
             clientInfo.productName,

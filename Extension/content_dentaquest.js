@@ -1,4 +1,18 @@
 /**
+ * DentaQuest Benefit Extractor
+ * 
+ * Note on Heuristic/Invented Logic:
+ * Several complex business questions (e.g. "Posterior composites downgraded to amalgam?", 
+ * "Are Major Services Paid on Prep", "Number of quads for the code D4341", etc.) do not 
+ * exist natively as structured fields in the DentaQuest API. We previously built custom 
+ * regex parsing functions (e.g. `posteriorCompositeDowngrade`, `majorPrepOrSeat`) to infer 
+ * these answers from the raw planBenefitSummary narrative text. 
+ * Per request, these heuristic assignments have been commented out below to prevent "inventing" 
+ * answers, keeping the JSON purely aligned with the raw API data. We can re-enable them later 
+ * if needed.
+ */
+
+/**
  * DentaQuest / Sun Life content script
  * ------------------------------------
  * Popup-driven build for the existing insurance-auditor extension.
@@ -594,12 +608,6 @@
       const orthoMaximum = findMaximum(maximumDeductible, /orthodont.*(?:lifetime\s+)?maximum/i);
       const waiting = waitingPeriodSummary(items, enrollmentHistory, memberInfo);
 
-      const allClinicalHistory = {};
-      const uniqueHistoryCodes = compactUnique(clinicalHistory.map(entry => clean(entry && entry.procedureCode).toUpperCase()));
-      for (const code of uniqueHistoryCodes) {
-        allClinicalHistory[code] = procedureHistory(clinicalHistory, code);
-      }
-
       const patientName = fullName(
         memberInfo.firstName,
         memberInfo.lastName,
@@ -676,9 +684,6 @@
           )) || MISSING,
           "Subgroup Name": clean(firstPresent(planInfo.parsedSubGroupName, memberEligibility.parsedSubGroupName, enrollment.parsedSubGroupName)) || MISSING,
           "Subgroup Number": clean(firstPresent(planInfo.parsedSubGroupNumber, memberEligibility.parsedSubGroupNumber, enrollment.parsedSubGroupNumber)) || MISSING,
-          "Fee Schedule": feeSchedule,
-          "Insurance Address": getDomFallbackValue(domFallback, "insuranceAddress"),
-          "Insurance Phone": getDomFallbackValue(domFallback, "insurancePhone"),
           "Provider Network Status": providerNetworkStatus,
           "Network Contract": clean(firstPresent(
             memberEligibility.networkContractNew,
@@ -699,69 +704,32 @@
             enrollment.terminationDate
           )),
           "Starting Month of Plan Year": monthFromPlanYear(planInfo.planYear),
-          "Plan Year": clean(planInfo.planYear) || MISSING,
-          "Payor ID": getDomFallbackValue(domFallback, "payorId")
-        },
-
-        "Eligibility Notes": {
-          "Member Eligibility Status": clean(memberEligibility.memberEligibilityStatus) || clean(patientFamily && patientFamily.status) || MISSING,
-          "Eligibility Status Last Updated": normalizeDate(memberEligibility.memberEligibilityStatusLastUpdated),
-          "Date of Service": normalizeDate(firstPresent(memberEligibility.dateOfService, enrollment.effectiveDate)),
-          "Coverage Level": clean(firstPresent(memberEligibility.memberCoverageLevel, memberEligibility.memberCoverageType)) || MISSING,
-          "Provider/Practitioner": titleCaseName(memberEligibility.practitionerName),
-          "Service Location": clean(memberEligibility.locationAddress) || MISSING,
-          "Member Timely Status": waiting["Member Timely Status"],
-          "Missing Tooth Information": clean(planInfo.missingTeeth) || MISSING,
-          "Coordination of Benefits": coordinationOfBenefits.length ? coordinationOfBenefits : "No coordination-of-benefits records returned",
-          "Coordination of Benefits Records": deduplicateObjects(coordinationOfBenefits),
-          "Notes": compactUnique([
-            present(memberEligibility.memberEligibilityStatus) ? `Eligibility is ${clean(memberEligibility.memberEligibilityStatus)}.` : "",
-            present(memberEligibility.productNew) ? `Product is ${clean(memberEligibility.productNew)} (${clean(memberEligibility.productCategory) || "category not stated"}).` : "",
-            present(memberEligibility.networkName) ? `Network is ${clean(memberEligibility.networkName)}.` : "",
-            waiting["Is there a Waiting Period"] === "No" ? "No current-member waiting period was found." : `Current waiting period: ${waiting.Period}.`,
-            clean(planInfo.missingTeeth) ? `Missing tooth field: ${clean(planInfo.missingTeeth)}.` : ""
-          ]).join(" ") || MISSING
+          "Plan Year": clean(planInfo.planYear) || MISSING
         },
 
         "Coverage and Maximums": {
-          "Yearly Maximum": annualMaximum ? money(annualMaximum.benefitAmount) : MISSING,
-          "Remaining": annualMaximum ? subtractMoney(annualMaximum.benefitAmount, annualMaximum.benefitApplied) : MISSING,
-          "Individual Deductible Paid to Date": individualDeductible ? money(individualDeductible.benefitApplied) : MISSING,
-          "Individual Deductible Remaining": individualDeductible ? subtractMoney(individualDeductible.benefitAmount, individualDeductible.benefitApplied) : MISSING,
-          "Family Deductible Paid to Date": familyDeductible ? money(familyDeductible.benefitApplied) : MISSING,
-          "Family Deductible Remaining": familyDeductible ? subtractMoney(familyDeductible.benefitAmount, familyDeductible.benefitApplied) : MISSING,
-          "Deductible Applies to Preventive": hasDeductibleForClasses(items, [
-            /preventive\/diagnostic/i,
-            /routine cleanings/i,
-            /fluoride/i,
-            /sealants/i,
-            /space maintainers/i
-          ]),
-          "Deductible Applies to Diagnostic": hasDeductibleForClasses(items, [
-            /oral exams/i,
-            /xray/i
-          ]),
+          // "Deductible Applies to Preventive": hasDeductibleForClasses(items, [
+          //   /preventive\/diagnostic/i,
+          //   /routine cleanings/i,
+          //   /fluoride/i,
+          //   /sealants/i,
+          //   /space maintainers/i
+          // ]),
+          // "Deductible Applies to Diagnostic": hasDeductibleForClasses(items, [
+          //   /oral exams/i,
+          //   /xray/i
+          // ]),
           "Is there a Waiting Period": waiting["Is there a Waiting Period"],
           "Period": waiting.Period,
           "Applies to": waiting["Applies to"],
-          "Are Major Services Paid on Prep": majorPrepOrSeat(items),
-          "Or Seat": majorPrepOrSeat(items),
+          // "Are Major Services Paid on Prep": majorPrepOrSeat(items),
+          // "Or Seat": majorPrepOrSeat(items),
           "Does Missing Tooth Clause Apply?": missingToothClause(planInfo),
           "Dependent Age Limit": getDomFallbackValue(domFallback, "dependentAgeLimit"),
-          "Orthodontic Deductible": orthoDeductible
-            ? money(orthoDeductible.benefitAmount)
-            : allOrthoDeductibleNotApplicable ? NOT_APPLICABLE : MISSING,
-          "Orthodontic Deductible Paid to Date": orthoDeductible
-            ? money(orthoDeductible.benefitApplied)
-            : allOrthoDeductibleNotApplicable ? NOT_APPLICABLE : MISSING,
-          "Orthodontic Maximum": orthoMaximum ? money(orthoMaximum.benefitAmount) : MISSING,
-          "Orthodontic Maximum Paid to Date": orthoMaximum ? money(orthoMaximum.benefitApplied) : MISSING,
           "All Maximums and Deductibles": deduplicateObjects(maximumDeductible)
         },
 
-        "General Benefit Categories": {
-          "All Clinical History": allClinicalHistory
-        }
+        "General Benefit Categories": {}
       };
 
       for (const [category, definitions] of Object.entries(PROCEDURE_GROUPS)) {
@@ -772,29 +740,29 @@
         output["General Benefit Categories"][category] = categoryOutput;
       }
 
-      output["General Benefit Categories"].EXAMS["Do D0120,D0150 Share a frequency with D0140?"] =
-        sharesFrequency(procedureMap, "D0120", ["D0120", "D0150", "D0140"]);
+      // output["General Benefit Categories"].EXAMS["Do D0120,D0150 Share a frequency with D0140?"] =
+      //   sharesFrequency(procedureMap, "D0120", ["D0120", "D0150", "D0140"]);
 
-      output["General Benefit Categories"].PREVENTATIVE["Permanent Un-restored Molars only?"] =
-        sealantRestriction(procedureMap);
+      // output["General Benefit Categories"].PREVENTATIVE["Permanent Un-restored Molars only?"] =
+      //   sealantRestriction(procedureMap);
 
-      output["General Benefit Categories"]["BASIC RESTORATIVE"]["Posterior composites downgraded to amalgam?"] =
-        posteriorCompositeDowngrade(items);
+      // output["General Benefit Categories"]["BASIC RESTORATIVE"]["Posterior composites downgraded to amalgam?"] =
+      //   posteriorCompositeDowngrade(items);
 
-      output["General Benefit Categories"]["MAJOR RESTORATIVE"]["Porcelain crowns downgraded on posterior teeth"] =
-        porcelainCrownDowngrade(items, procedureMap);
+      // output["General Benefit Categories"]["MAJOR RESTORATIVE"]["Porcelain crowns downgraded on posterior teeth"] =
+      //   porcelainCrownDowngrade(items, procedureMap);
 
-      output["General Benefit Categories"]["MAJOR RESTORATIVE"]["Can D2950 be done same day as crown?"] =
-        buildupSameDay(procedureMap);
+      // output["General Benefit Categories"]["MAJOR RESTORATIVE"]["Can D2950 be done same day as crown?"] =
+      //   buildupSameDay(procedureMap);
 
-      output["General Benefit Categories"].PERIODONTICS["Number of quads for the code D4341"] =
-        d4341Quadrants(procedureMap);
+      // output["General Benefit Categories"].PERIODONTICS["Number of quads for the code D4341"] =
+      //   d4341Quadrants(procedureMap);
 
-      output["General Benefit Categories"].PERIODONTICS["Do D4910 and D1110 share a frequency?"] =
-        sharesFrequency(procedureMap, "D4910", ["D4910", "D1110"]);
+      // output["General Benefit Categories"].PERIODONTICS["Do D4910 and D1110 share a frequency?"] =
+      //   sharesFrequency(procedureMap, "D4910", ["D4910", "D1110"]);
 
-      output["General Benefit Categories"].ORTHODONTICS["Payment Frequency"] =
-        orthoPaymentFrequency(items, clinicalHistory);
+      // output["General Benefit Categories"].ORTHODONTICS["Payment Frequency"] =
+      //   orthoPaymentFrequency(items, clinicalHistory);
 
       output["General Benefit Categories"].ORTHODONTICS["Ortho Age Limit"] =
         orthoAgeLimit(procedureMap);
