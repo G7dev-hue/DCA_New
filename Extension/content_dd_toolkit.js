@@ -406,30 +406,46 @@
 
         if (!state.procedureTemplate || !state.procedureHeaders?.authorization) {
             console.info("Delta Toolkit: Attempting automated initial procedure lookup to capture authorization...");
-            const input = document.querySelector('input[formcontrolname="procedureCode"], input[placeholder*="procedure" i], input[placeholder*="code" i], input[aria-label*="procedure" i], input[id*="procedure" i], input[name*="procedure" i]');
-            const buttons = Array.from(document.querySelectorAll('button'));
-            const searchBtn = buttons.find(b => /(search|submit|lookup|find)/i.test(b.textContent) && b.offsetParent !== null && !b.disabled);
             
-            if (input && searchBtn) {
-                // Bypass Angular/React's patched value setters
+            const inputs = Array.from(document.querySelectorAll('input:not([type="hidden"])')).filter(i => i.offsetParent !== null);
+            let input = inputs.find(i => /procedure|code|search/i.test(i.outerHTML || ""));
+            if (!input && inputs.length > 0) input = inputs[inputs.length - 1];
+
+            const buttons = Array.from(document.querySelectorAll('button, input[type="button"], input[type="submit"], a, div'));
+            const searchBtn = buttons.find(b => /(search|submit|lookup|find)/i.test(b.textContent || b.value || "") && b.offsetParent !== null && !b.disabled && b.tagName !== "DIV" && b.tagName !== "A");
+            
+            let failureReason = "Unknown";
+            
+            if (!input) failureReason = "Could not find any input field for procedure code on the page.";
+            else if (!searchBtn) failureReason = "Could not find a Search/Submit button on the page.";
+            else {
+                console.info("Delta Toolkit: Found input and button, dispatching simulated search...");
                 const nativeInputValueSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
-                nativeInputValueSetter.call(input, "D0120");
+                if (nativeInputValueSetter) {
+                    nativeInputValueSetter.call(input, "D0120");
+                } else {
+                    input.value = "D0120";
+                }
+                
                 input.dispatchEvent(new Event("input", { bubbles: true }));
                 input.dispatchEvent(new Event("change", { bubbles: true }));
                 
-                // Sometimes a short delay is needed before clicking
-                await sleep(100);
+                await sleep(200);
                 searchBtn.click();
                 
-                for (let i = 0; i < 20; i++) {
-                    await sleep(250);
-                    if (state.procedureTemplate) break;
+                for (let i = 0; i < 25; i++) {
+                    await sleep(300);
+                    if (state.procedureTemplate && state.procedureHeaders?.authorization) break;
+                }
+                
+                if (!state.procedureTemplate || !state.procedureHeaders?.authorization) {
+                    failureReason = "Simulated search button was clicked, but no API request was intercepted within 7 seconds.";
                 }
             }
-        }
 
-        if (!state.procedureTemplate || !state.procedureHeaders?.authorization) {
-            throw new Error("Could not automatically trigger a procedure search. Please perform one ordinary procedure-code lookup on the page first, then run the extractor again.");
+            if (!state.procedureTemplate || !state.procedureHeaders?.authorization) {
+                throw new Error(`Could not automatically capture the API token (${failureReason}). Please type D0120 manually into the page and click Search, then run the extractor again.`);
+            }
         }
 
         try {
@@ -773,7 +789,7 @@
             number_of_quads: parseQuads(allLimitations.join(" ")) || "N/A",
             exclusions_and_limitations: allLimitations,
             networks: networkRecords,
-            raw_api_response: sanitizeForOutput(raw),
+            
             error: error || null
         };
     }
@@ -809,18 +825,7 @@
             frequency_limit: parseFrequency(limitations),
             waiting_periods: waiting,
             limitations,
-            history_dates: historyDates,
-            utilization_benefits: sanitizeForOutput(utilization),
-            coverage_path: sanitizeForOutput(coverages.map(item => ({
-                level: item.level,
-                procedure: item.procedure,
-                procedure_id: item.procedureId,
-                coverage: item.coverage,
-                exclusions_and_limitations: item.exclusionsAndLimitations,
-                waiting_periods: item.waitingPeriods,
-                radio_graphs_required: item.radioGraphsRequired,
-                remarks_required: item.remarksRequired
-            })))
+            history_dates: historyDates
         };
     }
 

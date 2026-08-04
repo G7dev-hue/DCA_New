@@ -555,6 +555,17 @@
       return clean(domFallback && domFallback[key]) || MISSING;
     }
 
+    function deduplicateObjects(arr) {
+      if (!Array.isArray(arr)) return arr;
+      const seen = new Set();
+      return arr.filter(item => {
+        const stringified = JSON.stringify(item);
+        if (seen.has(stringified)) return false;
+        seen.add(stringified);
+        return true;
+      });
+    }
+
     function buildExtraction(rawInput, urlsInput, domFallbackInput) {
       const raw = rawInput || {};
       const urls = urlsInput || {};
@@ -563,11 +574,11 @@
       const memberInfo = isObject(raw.memberInfo) ? raw.memberInfo : {};
       const planInfo = isObject(raw.planInfo) ? raw.planInfo : {};
       const memberEligibility = isObject(raw.memberEligibility) ? raw.memberEligibility : {};
-      const familyInfo = Array.isArray(raw.familyInfo) ? raw.familyInfo : [];
+      const familyInfo = deduplicateObjects(Array.isArray(raw.familyInfo) ? raw.familyInfo : []);
       const enrollmentHistory = Array.isArray(raw.enrollmentHistory) ? raw.enrollmentHistory : [];
       const clinicalHistory = Array.isArray(raw.clinicalHistory) ? raw.clinicalHistory : [];
-      const maximumDeductible = Array.isArray(raw.maximumDeductible) ? raw.maximumDeductible : [];
-      const coordinationOfBenefits = Array.isArray(raw.coordinationOfBenefits) ? raw.coordinationOfBenefits : [];
+      const maximumDeductible = deduplicateObjects(Array.isArray(raw.maximumDeductible) ? raw.maximumDeductible : []);
+      const coordinationOfBenefits = deduplicateObjects(Array.isArray(raw.coordinationOfBenefits) ? raw.coordinationOfBenefits : []);
       const items = getBenefitItems(raw.planBenefitSummary);
       const procedureMap = indexProcedures(items);
       const memberProfileGuid = getMemberProfileGuid(urls);
@@ -635,8 +646,9 @@
           "Member ID": clean(firstPresent(memberInfo.memberId, memberEligibility.memberId, planInfo.memberId)) || MISSING,
           "Relation to Subscriber": relation,
           "Subscriber Name": subscriberName,
-          "Date of Birth of the subscriber": normalizeDate(firstPresent(subscriber && subscriber.dateOfBirth, domFallback.subscriberDateOfBirth)),
-          "SSN": getDomFallbackValue(domFallback, "ssn")
+          "Subscriber DOB": normalizeDate(firstPresent(subscriber && subscriber.dateOfBirth, domFallback.subscriberDateOfBirth)),
+          "SSN": getDomFallbackValue(domFallback, "ssn"),
+          "Family Members": deduplicateObjects(familyInfo)
         },
 
         "Insurance Information": {
@@ -695,6 +707,7 @@
           "Member Timely Status": waiting["Member Timely Status"],
           "Missing Tooth Information": clean(planInfo.missingTeeth) || MISSING,
           "Coordination of Benefits": coordinationOfBenefits.length ? coordinationOfBenefits : "No coordination-of-benefits records returned",
+          "Coordination of Benefits Records": deduplicateObjects(coordinationOfBenefits),
           "Notes": compactUnique([
             present(memberEligibility.memberEligibilityStatus) ? `Eligibility is ${clean(memberEligibility.memberEligibilityStatus)}.` : "",
             present(memberEligibility.productNew) ? `Product is ${clean(memberEligibility.productNew)} (${clean(memberEligibility.productCategory) || "category not stated"}).` : "",
@@ -736,12 +749,13 @@
             ? money(orthoDeductible.benefitApplied)
             : allOrthoDeductibleNotApplicable ? NOT_APPLICABLE : MISSING,
           "Orthodontic Maximum": orthoMaximum ? money(orthoMaximum.benefitAmount) : MISSING,
-          "Orthodontic Maximum Paid to Date": orthoMaximum ? money(orthoMaximum.benefitApplied) : MISSING
+          "Orthodontic Maximum Paid to Date": orthoMaximum ? money(orthoMaximum.benefitApplied) : MISSING,
+          "All Maximums and Deductibles": deduplicateObjects(maximumDeductible)
         },
 
-        "General Benefit Categories": {},
-
-        "Raw Source Data": raw
+        "General Benefit Categories": {
+          "All Clinical History": allClinicalHistory
+        }
       };
 
       for (const [category, definitions] of Object.entries(PROCEDURE_GROUPS)) {
@@ -1438,9 +1452,6 @@
       const missing = Array.isArray(metadata["Missing Core Endpoints"]) ? metadata["Missing Core Endpoints"] : [];
       if (!captured.length) throw new Error("No member APIs were found. Open the DentaQuest member details/benefits page, wait for it to load, and click Crawl again.");
       if (!output?.["Patient/Subscriber Information"] || !output?.["General Benefit Categories"]) throw new Error("DentaQuest data was found, but the normalized output could not be built.");
-
-      output.data_quality = missing.length ? "partial_api" : "full_api";
-      output.popup_integration = { command:"START_CRAWL", storage_key:"audit_context.dentaquest_data", captured_endpoint_count:captured.length, missing_core_endpoints:missing };
 
       autoDownloadJSON(output);
 
