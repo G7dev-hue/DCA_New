@@ -273,6 +273,10 @@ document.addEventListener('DOMContentLoaded', async () => {
                 console.warn("Crawl message error:", chrome.runtime.lastError.message);
             } else {
                 if (isDeltaToolkit) {
+                    if (response && response.status && response.status.includes("[!]")) {
+                        status.innerText = response.status;
+                        return;
+                    }
                     status.innerText = "Crawl started... Please wait.";
                     // Listen for progress updates
                     chrome.runtime.onMessage.addListener((msg) => {
