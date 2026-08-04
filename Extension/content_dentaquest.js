@@ -594,6 +594,12 @@
       const orthoMaximum = findMaximum(maximumDeductible, /orthodont.*(?:lifetime\s+)?maximum/i);
       const waiting = waitingPeriodSummary(items, enrollmentHistory, memberInfo);
 
+      const allClinicalHistory = {};
+      const uniqueHistoryCodes = compactUnique(clinicalHistory.map(entry => clean(entry && entry.procedureCode).toUpperCase()));
+      for (const code of uniqueHistoryCodes) {
+        allClinicalHistory[code] = procedureHistory(clinicalHistory, code);
+      }
+
       const patientName = fullName(
         memberInfo.firstName,
         memberInfo.lastName,
