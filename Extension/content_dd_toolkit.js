@@ -404,8 +404,8 @@
         };
         state.activeRun = run;
 
-        if (!state.procedureTemplate) {
-            console.info("Delta Toolkit: Attempting automated initial procedure lookup...");
+        if (!state.procedureTemplate || !state.procedureHeaders?.authorization) {
+            console.info("Delta Toolkit: Attempting automated initial procedure lookup to capture authorization...");
             const input = document.querySelector('input[formcontrolname="procedureCode"], input[placeholder*="procedure" i], input[placeholder*="code" i], input[aria-label*="procedure" i], input[id*="procedure" i], input[name*="procedure" i]');
             const buttons = Array.from(document.querySelectorAll('button'));
             const searchBtn = buttons.find(b => /(search|submit|lookup|find)/i.test(b.textContent) && b.offsetParent !== null && !b.disabled);
@@ -428,7 +428,7 @@
             }
         }
 
-        if (!state.procedureTemplate) {
+        if (!state.procedureTemplate || !state.procedureHeaders?.authorization) {
             throw new Error("Could not automatically trigger a procedure search. Please perform one ordinary procedure-code lookup on the page first, then run the extractor again.");
         }
 
