@@ -562,7 +562,8 @@
         if (Array.isArray(subscriber.maximumsAndDeductions)) maxDed = subscriber.maximumsAndDeductions;
         else if (subscriber.maximumsAndDeductions && Array.isArray(subscriber.maximumsAndDeductions.accumulators)) maxDed = [subscriber.maximumsAndDeductions];
         
-        const accumulators = maxDed.flatMap(m => m.accumulators || []);
+        const ppoMaxDed = maxDed.filter(m => (m.networks || []).some(n => n.toLowerCase().includes('ppo dentist')));
+        const accumulators = ppoMaxDed.flatMap(m => m.accumulators || []);
         const getAccum = (type, category) => accumulators.find(a => a.accumulatorType === type && a.categoryType === category) || {};
         
         const annualMaxObj = getAccum("Maximum", "General");
@@ -591,7 +592,8 @@
         if (Array.isArray(subscriber.maximumsAndDeductions)) maxDed = subscriber.maximumsAndDeductions;
         else if (subscriber.maximumsAndDeductions && Array.isArray(subscriber.maximumsAndDeductions.accumulators)) maxDed = [subscriber.maximumsAndDeductions];
         
-        const accumulators = maxDed.flatMap(m => m.accumulators || []);
+        const ppoMaxDed = maxDed.filter(m => (m.networks || []).some(n => n.toLowerCase().includes('ppo dentist')));
+        const accumulators = ppoMaxDed.flatMap(m => m.accumulators || []);
         const getAccum = (type, category) => accumulators.find(a => a.accumulatorType === type && a.categoryType === category) || {};
         
         const annualMaxObj = getAccum("Maximum", "General");
@@ -666,7 +668,8 @@
         if (Array.isArray(subscriber.maximumsAndDeductions)) maxDed = subscriber.maximumsAndDeductions;
         else if (subscriber.maximumsAndDeductions && Array.isArray(subscriber.maximumsAndDeductions.accumulators)) maxDed = [subscriber.maximumsAndDeductions];
         
-        const accumulators = maxDed.flatMap(m => m.accumulators || []);
+        const ppoMaxDed = maxDed.filter(m => (m.networks || []).some(n => n.toLowerCase().includes('ppo dentist')));
+        const accumulators = ppoMaxDed.flatMap(m => m.accumulators || []);
         const getAccum = (type, category) => accumulators.find(a => a.accumulatorType === type && a.categoryType === category) || {};
         
         const annualMaxObj = getAccum("Maximum", "General");
