@@ -411,9 +411,14 @@
             const searchBtn = buttons.find(b => /(search|submit|lookup|find)/i.test(b.textContent) && b.offsetParent !== null && !b.disabled);
             
             if (input && searchBtn) {
-                input.value = "D0120";
+                // Bypass Angular/React's patched value setters
+                const nativeInputValueSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
+                nativeInputValueSetter.call(input, "D0120");
                 input.dispatchEvent(new Event("input", { bubbles: true }));
                 input.dispatchEvent(new Event("change", { bubbles: true }));
+                
+                // Sometimes a short delay is needed before clicking
+                await sleep(100);
                 searchBtn.click();
                 
                 for (let i = 0; i < 20; i++) {
