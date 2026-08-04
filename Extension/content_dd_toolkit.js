@@ -40,7 +40,7 @@
     const PAGE_SOURCE = "delta-toolkit-page";
     const RESULT_STORAGE_KEY = "toolkit_data";
     const TARGET_ORIGIN = "https://www.dentalofficetoolkit.com";
-    const MEMBER_SEARCH_PATH = "/api/dot-gateway/v02/memberdetail/search";
+    const MEMBER_SEARCH_PATH = "/api/dot-gateway/v1/benefit/memberbenefits/search";
     const PROCEDURE_SEARCH_PATH = "/api/dot-gateway/v1/benefit/memberbenefits/procedures/search";
     const PROCEDURE_SEARCH_URL = `${TARGET_ORIGIN}${PROCEDURE_SEARCH_PATH}?type=codes`;
 
@@ -340,6 +340,16 @@
         const body = parseRequestBody(request.bodyText);
         const path = parsedUrl.pathname;
 
+        if (path === "/api/dot-gateway/v1/benefit/memberbenefits/routineprocedures/search") {
+            state.routineProceduresResponse = responseData;
+            persistNonSecretState(state);
+            return;
+        }
+        if (path === "/api/dot-gateway/v1/benefit/client/search") {
+            state.clientSearchResponse = responseData;
+            persistNonSecretState(state);
+            return;
+        }
         if (path === MEMBER_SEARCH_PATH) {
             state.memberSearchRequest = body || state.memberSearchRequest;
             state.memberSearchResponse = responseData;
@@ -433,6 +443,8 @@
                 await sleep(200);
                 
                 if (searchBtn) {
+                    searchBtn.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
+                    searchBtn.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
                     searchBtn.click();
                 } else {
                     console.info("Delta Toolkit: No search button found, pressing Enter on the input instead.");
@@ -545,10 +557,68 @@
     // Output construction
     // =====================================================================
 
+    function buildCoverageAndMaximums(subscriber, leaves, dom) {
+        let maxDed = [];
+        if (Array.isArray(subscriber.maximumsAndDeductions)) maxDed = subscriber.maximumsAndDeductions;
+        else if (subscriber.maximumsAndDeductions && Array.isArray(subscriber.maximumsAndDeductions.accumulators)) maxDed = [subscriber.maximumsAndDeductions];
+        
+        const accumulators = maxDed.flatMap(m => m.accumulators || []);
+        const getAccum = (type, category) => accumulators.find(a => a.accumulatorType === type && a.categoryType === category) || {};
+        
+        const annualMaxObj = getAccum("Maximum", "General");
+        const indDedObj = getAccum("Deductible", "General");
+        const orthoDedObj = getAccum("Deductible", "Orthodontic");
+        const orthoMaxObj = getAccum("Maximum", "Orthodontic");
+
+        return {
+            "Yearly Maximum": moneyValue(annualMaxObj.individualAmount ?? pickFinancialLeaf(leaves, { scope: [["annual", "yearly"], ["maximum", "max"]], exclude: ["ortho", "orthodont"] }, "total") ?? domValue(dom, ["Yearly Maximum", "Annual Maximum"])),
+            "Remaining": moneyValue(annualMaxObj.individualAmountRemaining ?? pickFinancialLeaf(leaves, { scope: [["annual", "yearly"], ["maximum", "max"]], exclude: ["ortho", "orthodont"] }, "remaining") ?? domValue(dom, ["Yearly Maximum Remaining", "Annual Maximum Remaining"])),
+            "Individual Deductible Paid to Date": moneyValue(indDedObj.individualAmountUsed ?? pickFinancialLeaf(leaves, { scope: [["individual", "member"], ["deductible", "ded"]], exclude: ["family", "ortho", "orthodont"] }, "used") ?? domValue(dom, ["Individual Deductible Paid to Date", "Individual Deductible Used"])),
+            "Individual Deductible Remaining": moneyValue(indDedObj.individualAmountRemaining ?? pickFinancialLeaf(leaves, { scope: [["individual", "member"], ["deductible", "ded"]], exclude: ["family", "ortho", "orthodont"] }, "remaining") ?? domValue(dom, ["Individual Deductible Remaining"])),
+            "Family Deductible Paid to Date": moneyValue(indDedObj.familyAmountUsed ?? pickFinancialLeaf(leaves, { scope: [["family"], ["deductible", "ded"]], exclude: ["ortho", "orthodont"] }, "used") ?? domValue(dom, ["Family Deductible Paid to Date", "Family Deductible Used"])),
+            "Family Deductible Remaining": moneyValue(indDedObj.familyAmountRemaining ?? pickFinancialLeaf(leaves, { scope: [["family"], ["deductible", "ded"]], exclude: ["ortho", "orthodont"] }, "remaining") ?? domValue(dom, ["Family Deductible Remaining"])),
+            "Orthodontic Deductible": moneyValue(orthoDedObj.individualAmount ?? pickFinancialLeaf(leaves, { scope: [["ortho", "orthodont"], ["deductible", "ded"]], exclude: [] }, "total") ?? domValue(dom, ["Orthodontic Deductible", "Ortho Deductible"])),
+            "Orthodontic Deductible Paid to Date": moneyValue(orthoDedObj.individualAmountUsed ?? pickFinancialLeaf(leaves, { scope: [["ortho", "orthodont"], ["deductible", "ded"]], exclude: [] }, "used") ?? domValue(dom, ["Orthodontic Deductible Paid to Date", "Ortho Deductible Paid to Date"])),
+            "Orthodontic Maximum": moneyValue(orthoMaxObj.individualAmount ?? pickFinancialLeaf(leaves, { scope: [["ortho", "orthodont"], ["maximum", "max", "lifetime"]], exclude: ["deductible"] }, "total") ?? domValue(dom, ["Orthodontic Maximum", "Ortho Maximum", "Ortho Lifetime Maximum"])),
+            "Orthodontic Maximum Paid to Date": moneyValue(orthoMaxObj.individualAmountUsed ?? pickFinancialLeaf(leaves, { scope: [["ortho", "orthodont"], ["maximum", "max", "lifetime"]], exclude: ["deductible"] }, "used") ?? domValue(dom, ["Orthodontic Maximum Paid to Date", "Ortho Maximum Paid to Date"])),
+            "Waiting Period": provisions.waiting_period,
+            "Dependent Age Limit": provisions.dependent_age_limit
+        };
+    }
+
+    function buildCoverageAndMaximums(subscriber, leaves, dom) {
+        let maxDed = [];
+        if (Array.isArray(subscriber.maximumsAndDeductions)) maxDed = subscriber.maximumsAndDeductions;
+        else if (subscriber.maximumsAndDeductions && Array.isArray(subscriber.maximumsAndDeductions.accumulators)) maxDed = [subscriber.maximumsAndDeductions];
+        
+        const accumulators = maxDed.flatMap(m => m.accumulators || []);
+        const getAccum = (type, category) => accumulators.find(a => a.accumulatorType === type && a.categoryType === category) || {};
+        
+        const annualMaxObj = getAccum("Maximum", "General");
+        const indDedObj = getAccum("Deductible", "General");
+        const orthoDedObj = getAccum("Deductible", "Orthodontic");
+        const orthoMaxObj = getAccum("Maximum", "Orthodontic");
+
+        return {
+            "Yearly Maximum": moneyValue(annualMaxObj.individualAmount ?? pickFinancialLeaf(leaves, { scope: [["annual", "yearly"], ["maximum", "max"]], exclude: ["ortho", "orthodont"] }, "total") ?? domValue(dom, ["Yearly Maximum", "Annual Maximum"])),
+            "Remaining": moneyValue(annualMaxObj.individualAmountRemaining ?? pickFinancialLeaf(leaves, { scope: [["annual", "yearly"], ["maximum", "max"]], exclude: ["ortho", "orthodont"] }, "remaining") ?? domValue(dom, ["Yearly Maximum Remaining", "Annual Maximum Remaining"])),
+            "Individual Deductible Paid to Date": moneyValue(indDedObj.individualAmountUsed ?? pickFinancialLeaf(leaves, { scope: [["individual", "member"], ["deductible", "ded"]], exclude: ["family", "ortho", "orthodont"] }, "used") ?? domValue(dom, ["Individual Deductible Paid to Date", "Individual Deductible Used"])),
+            "Individual Deductible Remaining": moneyValue(indDedObj.individualAmountRemaining ?? pickFinancialLeaf(leaves, { scope: [["individual", "member"], ["deductible", "ded"]], exclude: ["family", "ortho", "orthodont"] }, "remaining") ?? domValue(dom, ["Individual Deductible Remaining"])),
+            "Family Deductible Paid to Date": moneyValue(indDedObj.familyAmountUsed ?? pickFinancialLeaf(leaves, { scope: [["family"], ["deductible", "ded"]], exclude: ["ortho", "orthodont"] }, "used") ?? domValue(dom, ["Family Deductible Paid to Date", "Family Deductible Used"])),
+            "Family Deductible Remaining": moneyValue(indDedObj.familyAmountRemaining ?? pickFinancialLeaf(leaves, { scope: [["family"], ["deductible", "ded"]], exclude: ["ortho", "orthodont"] }, "remaining") ?? domValue(dom, ["Family Deductible Remaining"])),
+            "Orthodontic Deductible": moneyValue(orthoDedObj.individualAmount ?? pickFinancialLeaf(leaves, { scope: [["ortho", "orthodont"], ["deductible", "ded"]], exclude: [] }, "total") ?? domValue(dom, ["Orthodontic Deductible", "Ortho Deductible"])),
+            "Orthodontic Deductible Paid to Date": moneyValue(orthoDedObj.individualAmountUsed ?? pickFinancialLeaf(leaves, { scope: [["ortho", "orthodont"], ["deductible", "ded"]], exclude: [] }, "used") ?? domValue(dom, ["Orthodontic Deductible Paid to Date", "Ortho Deductible Paid to Date"])),
+            "Orthodontic Maximum": moneyValue(orthoMaxObj.individualAmount ?? pickFinancialLeaf(leaves, { scope: [["ortho", "orthodont"], ["maximum", "max", "lifetime"]], exclude: ["deductible"] }, "total") ?? domValue(dom, ["Orthodontic Maximum", "Ortho Maximum", "Ortho Lifetime Maximum"])),
+            "Orthodontic Maximum Paid to Date": moneyValue(orthoMaxObj.individualAmountUsed ?? pickFinancialLeaf(leaves, { scope: [["ortho", "orthodont"], ["maximum", "max", "lifetime"]], exclude: ["deductible"] }, "used") ?? domValue(dom, ["Orthodontic Maximum Paid to Date", "Ortho Maximum Paid to Date"])),
+            "Waiting Period": provisions.waiting_period,
+            "Dependent Age Limit": provisions.dependent_age_limit
+        };
+    }
+
     function buildFinalOutput(state, rawByCode, run) {
         const memberRoot = state.memberSearchResponse || {};
         const subscribers = Array.isArray(memberRoot.subscribers) ? memberRoot.subscribers : [];
-        const subscriber = subscribers[0] || {};
+        const subscriber = state.memberSearchResponse || {};
         const template = state.procedureTemplate || {};
         const memberSearchRequest = state.memberSearchRequest || {};
         const patient = selectPatient(subscriber, template.memberPersonId);
@@ -570,7 +640,7 @@
         const leaves = flattenLeaves(supportCorpus);
         const dom = buildDomLabelMap();
 
-        const subscriberName = joinName(subscriber.subscriberFirstName, subscriber.subscriberLastName);
+        const subscriberName = joinName(subscriber.subscriberFirstName || state.procedureTemplate?.subscriberFirstName, subscriber.subscriberLastName || state.procedureTemplate?.subscriberLastName);
         const patientName = patient.isSubscriber
             ? subscriberName
             : joinName(patient.record.dependentFirstName, patient.record.dependentLastName);
@@ -654,8 +724,20 @@
         }
 
         const provisions = {
+            deductible_applies_to_preventive: "N/A", // user disabled
+            deductible_applies_to_diagnostic: "N/A", // user disabled
             waiting_period: combinedWaitingPeriod,
+            waiting_period_applies_to: waitingPeriodAppliesTo,
+            major_services_paid_on_prep_or_seat: "N/A", // disabled
+            missing_tooth_clause: "N/A", // disabled
             dependent_age_limit: actualDepAge,
+            d0120_d0150_share_frequency_with_d0140: "N/A", // disabled
+            permanent_unrestored_molars_only: "N/A", // disabled
+            posterior_composites_downgraded_to_amalgam: "N/A", // disabled
+            porcelain_crowns_downgraded_on_posterior_teeth: "N/A", // disabled
+            d2950_same_day_as_crown: "N/A", // disabled
+            d4341_number_of_quads: "N/A", // disabled
+            d4910_d1110_share_frequency: "N/A", // disabled
             ortho_payment_frequency: orthoPaymentFrequency(procMap),
             ortho_age_limit: actualOrthoAgeLimit
         };
@@ -740,13 +822,14 @@
                 "Starting Month of Plan Year": valueOrNA(planYearStart),
                 "Payor ID": valueOrNA(claimInfo.payorId)
             },
-            "Eligibility Notes": eligibilityNotes,
-            "Coverage and Maximums": subscriber.maximumsAndDeductions || [],
-            "Plan Provisions": {
-                "Waiting Period": provisions.waiting_period,
-                "Dependent Age Limit": provisions.dependent_age_limit
-            },
+            "Coverage and Maximums": buildCoverageAndMaximums(subscriber, leaves, dom),
             "General Benefit Categories": buildRequestedFieldMap(procMap, provisions),
+            "Routine Procedures": ppoRoutine.routineProcedures,
+            "Plan Provisions": {
+                "Waiting Period": combinedWaitingPeriod,
+                "Dependent Age Limit": actualDepAge,
+                "Ortho Age Limits": actualOrthoAgeLimit
+            },
             "Extraction Metadata": {
                 "Source": "Delta Dental Office Toolkit",
                 "Portal": location.hostname,
@@ -779,7 +862,7 @@
             };
         }
 
-        const networkRecords = raw.map(bucket => normalizeNetworkBucket(code, bucket)).filter(Boolean);
+        const networkRecords = raw.map(bucket => normalizeNetworkBucket(code, bucket)).filter(Boolean).filter(n => (n.network || "").toLowerCase().includes("ppo dentist"));
         const preferred = choosePreferredNetwork(networkRecords);
         const other = networkRecords.filter(item => item !== preferred);
         const allLimitations = uniqueStrings(networkRecords.flatMap(item => item.limitations));
@@ -1450,6 +1533,8 @@
             const payload = {
                 memberSearchRequest: sanitizeForOutput(state.memberSearchRequest),
                 memberSearchResponse: sanitizeForOutput(state.memberSearchResponse),
+                routineProceduresResponse: sanitizeForOutput(state.routineProceduresResponse),
+                clientSearchResponse: sanitizeForOutput(state.clientSearchResponse),
                 procedureTemplate: sanitizeForOutput(state.procedureTemplate)
             };
             sessionStorage.setItem("toolkit_capture_v1", JSON.stringify(payload));
@@ -1464,6 +1549,8 @@
             if (!saved) return;
             state.memberSearchRequest = saved.memberSearchRequest || null;
             state.memberSearchResponse = saved.memberSearchResponse || null;
+            state.routineProceduresResponse = saved.routineProceduresResponse || null;
+            state.clientSearchResponse = saved.clientSearchResponse || null;
             state.procedureTemplate = saved.procedureTemplate || null;
             // Authorization is intentionally never persisted. A fresh manual lookup
             // is still required after a full page/browser session reload if the API
