@@ -45,19 +45,19 @@
     const PROCEDURE_SEARCH_URL = `${TARGET_ORIGIN}${PROCEDURE_SEARCH_PATH}?type=codes`;
 
     const CATEGORY_CODES = Object.freeze({
-        exams: ["D0180", "D0120", "D0140", "D0150"],
-        diagnostic: ["D0210", "D0220", "D0230", "D0240", "D0274", "D0330"],
-        preventative: ["D1510", "D1110", "D1120", "D1206", "D1351"],
-        basicRestorative: ["D2140", "D2331", "D2620"],
-        majorRestorative: ["D2740", "D2950", "D2991"],
-        endodontics: ["D3347", "D3310", "D3330"],
-        periodontics: ["D4260", "D4341", "D4355", "D4381", "D4910"],
-        removableProstho: ["D5860", "D5110", "D5740", "D5982"],
-        implant: ["D6194", "D6010", "D6056", "D6065"],
-        fixedProstho: ["D6245"],
-        oralSurgery: ["D7259", "D7140", "D7240"],
-        orthodontics: ["D8010", "D8080", "D8090"],
-        adjunctive: ["D9430", "D9110", "D9222", "D9239", "D9310", "D9944"]
+        EXAMS: ["D0180", "D0120", "D0140", "D0150"],
+        DIAGNOSTIC: ["D0210", "D0220", "D0230", "D0240", "D0274", "D0330"],
+        PREVENTATIVE: ["D1510", "D1110", "D1120", "D1206", "D1351"],
+        "BASIC RESTORATIVE": ["D2140", "D2331", "D2620"],
+        "MAJOR RESTORATIVE": ["D2740", "D2950", "D2991"],
+        ENDODONTICS: ["D3347", "D3310", "D3330"],
+        PERIODONTICS: ["D4260", "D4341", "D4355", "D4381", "D4910"],
+        "REMOVABLE PROSTHO": ["D5860", "D5110", "D5740", "D5982"],
+        IMPLANT: ["D6194", "D6010", "D6056", "D6065"],
+        "FIXED PROSTHO": ["D6245"],
+        "ORAL SURGERY": ["D7259", "D7140", "D7240"],
+        ORTHODONTICS: ["D8010", "D8080", "D8090"],
+        ADJUNCTIVE: ["D9430", "D9110", "D9222", "D9239", "D9310", "D9944"]
     });
 
     const PROCEDURE_LABELS = Object.freeze({
@@ -156,8 +156,8 @@
                         clearTimeout(wait.timer);
                         pending.delete(message.requestId);
                         wait.sendResponse({
-                            status: `[+] Done — Extraction finished. JSON downloaded.`,
-                            data_quality: message.data?.["Extraction Metadata"]?.["Data Quality"] || "unknown"
+                            status: `[+] Done — ${message.data?.benefit_coverage?.procedure_count || 0} codes extracted. JSON downloaded.`,
+                            data_quality: message.data?.data_quality || "unknown"
                         });
                     }
                 }).catch(error => {
@@ -244,6 +244,7 @@
         interceptFetch(state, nativeFetch);
         interceptXHR(state, NativeXHR);
         installPageMessageBridge(state, nativeFetch);
+        installFloatingUiWhenReady(state, nativeFetch);
 
         console.info("Delta Toolkit extractor installed. Perform one normal procedure lookup so the authenticated request template can be learned.");
     }
@@ -354,6 +355,7 @@
             state.memberSearchRequest = body || state.memberSearchRequest;
             state.memberSearchResponse = responseData;
             persistNonSecretState(state);
+            setStatus(state, "Member details captured. Run one procedure lookup if you have not already.", "ready");
             return;
         }
 
@@ -364,6 +366,7 @@
                 const codes = extractCodes(body.procedureCodes);
                 if (codes.length === 1) state.procedureResponses.set(codes[0], responseData);
                 persistNonSecretState(state);
+                setStatus(state, "Authenticated procedure request learned. Ready to extract all codes.", "ready");
             }
             return;
         }
@@ -401,7 +404,54 @@
         });
     }
 
+    function installFloatingUiWhenReady(state, nativeFetch) {
+        const install = () => {
+            if (!document.documentElement || document.getElementById("delta-toolkit-extractor-ui")) return;
 
+            const root = document.createElement("div");
+            root.id = "delta-toolkit-extractor-ui";
+            root.style.cssText = [
+                "position:fixed", "right:18px", "bottom:18px", "z-index:2147483647",
+                "width:300px", "font:13px/1.4 Arial,sans-serif", "background:#fff",
+                "color:#172033", "border:1px solid #9db3c7", "border-radius:10px",
+                "box-shadow:0 8px 28px rgba(0,0,0,.22)", "padding:12px"
+            ].join(";");
+
+            const title = document.createElement("div");
+            title.textContent = "Delta Toolkit Extractor";
+            title.style.cssText = "font-weight:700;margin-bottom:6px;color:#075985";
+
+            const status = document.createElement("div");
+            status.style.cssText = "min-height:36px;margin-bottom:9px;color:#475569";
+            status.textContent = state.procedureTemplate
+                ? "Authenticated request learned. Ready."
+                : "Run one normal procedure-code lookup first.";
+
+            const button = document.createElement("button");
+            button.type = "button";
+            button.textContent = "Extract Delta Benefits";
+            button.style.cssText = [
+                "width:100%", "border:0", "border-radius:7px", "padding:9px 12px",
+                "font-weight:700", "cursor:pointer", "background:#0e7490", "color:#fff"
+            ].join(";");
+            button.addEventListener("click", () => {
+                const requestId = makeId();
+                startCrawl(state, nativeFetch, requestId).catch(error => {
+                    setStatus(state, error.message, "error");
+                    postPageMessage("ERROR", { requestId, error: error.message });
+                });
+            });
+
+            root.append(title, status, button);
+            document.documentElement.appendChild(root);
+            state.statusEl = status;
+            state.buttonEl = button;
+        };
+
+        if (document.readyState === "loading") {
+            document.addEventListener("DOMContentLoaded", install, { once: true });
+        } else install();
+    }
 
     async function startCrawl(state, nativeFetch, requestId) {
         if (state.activeRun && !state.activeRun.done) {
@@ -414,68 +464,24 @@
         };
         state.activeRun = run;
 
-        if (!state.procedureTemplate || !state.procedureHeaders?.authorization) {
-            console.info("Delta Toolkit: Attempting automated initial procedure lookup to capture authorization...");
-            
-            const inputs = Array.from(document.querySelectorAll('input:not([type="hidden"])'));
-            let input = inputs.find(i => /procedure|code|search/i.test(i.outerHTML || ""));
-            if (!input && inputs.length > 0) input = inputs[inputs.length - 1];
-
-            const buttons = Array.from(document.querySelectorAll('button, input[type="button"], input[type="submit"], a[class*="btn"], div[class*="btn"]'));
-            const searchBtn = buttons.find(b => /(search|submit|lookup|find|add|check)/i.test(b.textContent || b.value || b.outerHTML || "") && !b.disabled);
-            
-            let failureReason = "Unknown";
-            
-            if (!input) {
-                failureReason = "Could not find any input field for procedure code on the page.";
-            } else {
-                console.info("Delta Toolkit: Found input, dispatching simulated search...");
-                const nativeInputValueSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
-                if (nativeInputValueSetter) {
-                    nativeInputValueSetter.call(input, "D0120");
-                } else {
-                    input.value = "D0120";
-                }
-                
-                input.dispatchEvent(new Event("input", { bubbles: true }));
-                input.dispatchEvent(new Event("change", { bubbles: true }));
-                
-                await sleep(200);
-                
-                if (searchBtn) {
-                    searchBtn.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
-                    searchBtn.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
-                    searchBtn.click();
-                } else {
-                    console.info("Delta Toolkit: No search button found, pressing Enter on the input instead.");
-                    input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", code: "Enter", keyCode: 13, which: 13, bubbles: true }));
-                    input.dispatchEvent(new KeyboardEvent("keypress", { key: "Enter", code: "Enter", keyCode: 13, which: 13, bubbles: true }));
-                    input.dispatchEvent(new KeyboardEvent("keyup", { key: "Enter", code: "Enter", keyCode: 13, which: 13, bubbles: true }));
-                }
-                
-                for (let i = 0; i < 25; i++) {
-                    await sleep(300);
-                    if (state.procedureTemplate && state.procedureHeaders?.authorization) break;
-                }
-                
-                if (!state.procedureTemplate || !state.procedureHeaders?.authorization) {
-                    failureReason = "Simulated search (or Enter key) was triggered, but no API request was intercepted within 7 seconds.";
-                }
-            }
-
-            if (!state.procedureTemplate || !state.procedureHeaders?.authorization) {
-                throw new Error(`Could not automatically capture the API token (${failureReason}). Please type D0120 manually into the page and click Search, then run the extractor again.`);
-            }
+        if (!state.procedureTemplate) {
+            throw new Error("No authenticated procedure request has been captured. Perform one ordinary procedure-code lookup in the Toolkit, then run the extractor again.");
         }
+
+        setBusy(state, true);
+        setStatus(state, `Starting ${PROCEDURE_CODES.length}-code extraction…`, "working");
 
         try {
             const rawByCode = await fetchAllProcedures(state, nativeFetch, run);
             if (run.cancelled) throw new Error("This extraction was superseded by a newer run.");
 
+            setStatus(state, "Normalizing member, plan, financial, and procedure details…", "working");
             const data = buildFinalOutput(state, rawByCode, run);
+            validateProcedureIntegrity(data.benefit_coverage.procedures);
 
             run.done = true;
             postPageMessage("RESULT", { requestId, data });
+            setStatus(state, `Done — ${PROCEDURE_CODES.length} codes extracted.`, "ready");
 
             // If the ISOLATED-world bridge is present, it acknowledges and handles
             // storage/download. Otherwise the MAIN-world UI still works standalone.
@@ -484,6 +490,7 @@
             return data;
         } finally {
             run.done = true;
+            setBusy(state, false);
         }
     }
 
@@ -505,6 +512,7 @@
                     results.set(code, null);
                 }
                 completed += 1;
+                setStatus(state, `Extracting procedure benefits: ${completed}/${PROCEDURE_CODES.length}`, "working");
                 await sleep(120 + Math.floor(Math.random() * 140));
             }
         });
@@ -557,70 +565,10 @@
     // Output construction
     // =====================================================================
 
-    function buildCoverageAndMaximums(subscriber, leaves, dom) {
-        let maxDed = [];
-        if (Array.isArray(subscriber.maximumsAndDeductions)) maxDed = subscriber.maximumsAndDeductions;
-        else if (subscriber.maximumsAndDeductions && Array.isArray(subscriber.maximumsAndDeductions.accumulators)) maxDed = [subscriber.maximumsAndDeductions];
-        
-        const ppoMaxDed = maxDed.filter(m => (m.networks || []).some(n => n.toLowerCase().includes('ppo dentist')));
-        const accumulators = ppoMaxDed.flatMap(m => m.accumulators || []);
-        const getAccum = (type, category) => accumulators.find(a => a.accumulatorType === type && a.categoryType === category) || {};
-        
-        const annualMaxObj = getAccum("Maximum", "General");
-        const indDedObj = getAccum("Deductible", "General");
-        const orthoDedObj = getAccum("Deductible", "Orthodontic");
-        const orthoMaxObj = getAccum("Maximum", "Orthodontic");
-
-        return {
-            "Yearly Maximum": moneyValue(annualMaxObj.individualAmount ?? pickFinancialLeaf(leaves, { scope: [["annual", "yearly"], ["maximum", "max"]], exclude: ["ortho", "orthodont"] }, "total") ?? domValue(dom, ["Yearly Maximum", "Annual Maximum"])),
-            "Remaining": moneyValue(annualMaxObj.individualAmountRemaining ?? pickFinancialLeaf(leaves, { scope: [["annual", "yearly"], ["maximum", "max"]], exclude: ["ortho", "orthodont"] }, "remaining") ?? domValue(dom, ["Yearly Maximum Remaining", "Annual Maximum Remaining"])),
-            "Individual Deductible Paid to Date": moneyValue(indDedObj.individualAmountUsed ?? pickFinancialLeaf(leaves, { scope: [["individual", "member"], ["deductible", "ded"]], exclude: ["family", "ortho", "orthodont"] }, "used") ?? domValue(dom, ["Individual Deductible Paid to Date", "Individual Deductible Used"])),
-            "Individual Deductible Remaining": moneyValue(indDedObj.individualAmountRemaining ?? pickFinancialLeaf(leaves, { scope: [["individual", "member"], ["deductible", "ded"]], exclude: ["family", "ortho", "orthodont"] }, "remaining") ?? domValue(dom, ["Individual Deductible Remaining"])),
-            "Family Deductible Paid to Date": moneyValue(indDedObj.familyAmountUsed ?? pickFinancialLeaf(leaves, { scope: [["family"], ["deductible", "ded"]], exclude: ["ortho", "orthodont"] }, "used") ?? domValue(dom, ["Family Deductible Paid to Date", "Family Deductible Used"])),
-            "Family Deductible Remaining": moneyValue(indDedObj.familyAmountRemaining ?? pickFinancialLeaf(leaves, { scope: [["family"], ["deductible", "ded"]], exclude: ["ortho", "orthodont"] }, "remaining") ?? domValue(dom, ["Family Deductible Remaining"])),
-            "Orthodontic Deductible": moneyValue(orthoDedObj.individualAmount ?? pickFinancialLeaf(leaves, { scope: [["ortho", "orthodont"], ["deductible", "ded"]], exclude: [] }, "total") ?? domValue(dom, ["Orthodontic Deductible", "Ortho Deductible"])),
-            "Orthodontic Deductible Paid to Date": moneyValue(orthoDedObj.individualAmountUsed ?? pickFinancialLeaf(leaves, { scope: [["ortho", "orthodont"], ["deductible", "ded"]], exclude: [] }, "used") ?? domValue(dom, ["Orthodontic Deductible Paid to Date", "Ortho Deductible Paid to Date"])),
-            "Orthodontic Maximum": moneyValue(orthoMaxObj.individualAmount ?? pickFinancialLeaf(leaves, { scope: [["ortho", "orthodont"], ["maximum", "max", "lifetime"]], exclude: ["deductible"] }, "total") ?? domValue(dom, ["Orthodontic Maximum", "Ortho Maximum", "Ortho Lifetime Maximum"])),
-            "Orthodontic Maximum Paid to Date": moneyValue(orthoMaxObj.individualAmountUsed ?? pickFinancialLeaf(leaves, { scope: [["ortho", "orthodont"], ["maximum", "max", "lifetime"]], exclude: ["deductible"] }, "used") ?? domValue(dom, ["Orthodontic Maximum Paid to Date", "Ortho Maximum Paid to Date"])),
-            "Waiting Period": provisions.waiting_period,
-            "Dependent Age Limit": provisions.dependent_age_limit
-        };
-    }
-
-    function buildCoverageAndMaximums(subscriber, leaves, dom) {
-        let maxDed = [];
-        if (Array.isArray(subscriber.maximumsAndDeductions)) maxDed = subscriber.maximumsAndDeductions;
-        else if (subscriber.maximumsAndDeductions && Array.isArray(subscriber.maximumsAndDeductions.accumulators)) maxDed = [subscriber.maximumsAndDeductions];
-        
-        const ppoMaxDed = maxDed.filter(m => (m.networks || []).some(n => n.toLowerCase().includes('ppo dentist')));
-        const accumulators = ppoMaxDed.flatMap(m => m.accumulators || []);
-        const getAccum = (type, category) => accumulators.find(a => a.accumulatorType === type && a.categoryType === category) || {};
-        
-        const annualMaxObj = getAccum("Maximum", "General");
-        const indDedObj = getAccum("Deductible", "General");
-        const orthoDedObj = getAccum("Deductible", "Orthodontic");
-        const orthoMaxObj = getAccum("Maximum", "Orthodontic");
-
-        return {
-            "Yearly Maximum": moneyValue(annualMaxObj.individualAmount ?? pickFinancialLeaf(leaves, { scope: [["annual", "yearly"], ["maximum", "max"]], exclude: ["ortho", "orthodont"] }, "total") ?? domValue(dom, ["Yearly Maximum", "Annual Maximum"])),
-            "Remaining": moneyValue(annualMaxObj.individualAmountRemaining ?? pickFinancialLeaf(leaves, { scope: [["annual", "yearly"], ["maximum", "max"]], exclude: ["ortho", "orthodont"] }, "remaining") ?? domValue(dom, ["Yearly Maximum Remaining", "Annual Maximum Remaining"])),
-            "Individual Deductible Paid to Date": moneyValue(indDedObj.individualAmountUsed ?? pickFinancialLeaf(leaves, { scope: [["individual", "member"], ["deductible", "ded"]], exclude: ["family", "ortho", "orthodont"] }, "used") ?? domValue(dom, ["Individual Deductible Paid to Date", "Individual Deductible Used"])),
-            "Individual Deductible Remaining": moneyValue(indDedObj.individualAmountRemaining ?? pickFinancialLeaf(leaves, { scope: [["individual", "member"], ["deductible", "ded"]], exclude: ["family", "ortho", "orthodont"] }, "remaining") ?? domValue(dom, ["Individual Deductible Remaining"])),
-            "Family Deductible Paid to Date": moneyValue(indDedObj.familyAmountUsed ?? pickFinancialLeaf(leaves, { scope: [["family"], ["deductible", "ded"]], exclude: ["ortho", "orthodont"] }, "used") ?? domValue(dom, ["Family Deductible Paid to Date", "Family Deductible Used"])),
-            "Family Deductible Remaining": moneyValue(indDedObj.familyAmountRemaining ?? pickFinancialLeaf(leaves, { scope: [["family"], ["deductible", "ded"]], exclude: ["ortho", "orthodont"] }, "remaining") ?? domValue(dom, ["Family Deductible Remaining"])),
-            "Orthodontic Deductible": moneyValue(orthoDedObj.individualAmount ?? pickFinancialLeaf(leaves, { scope: [["ortho", "orthodont"], ["deductible", "ded"]], exclude: [] }, "total") ?? domValue(dom, ["Orthodontic Deductible", "Ortho Deductible"])),
-            "Orthodontic Deductible Paid to Date": moneyValue(orthoDedObj.individualAmountUsed ?? pickFinancialLeaf(leaves, { scope: [["ortho", "orthodont"], ["deductible", "ded"]], exclude: [] }, "used") ?? domValue(dom, ["Orthodontic Deductible Paid to Date", "Ortho Deductible Paid to Date"])),
-            "Orthodontic Maximum": moneyValue(orthoMaxObj.individualAmount ?? pickFinancialLeaf(leaves, { scope: [["ortho", "orthodont"], ["maximum", "max", "lifetime"]], exclude: ["deductible"] }, "total") ?? domValue(dom, ["Orthodontic Maximum", "Ortho Maximum", "Ortho Lifetime Maximum"])),
-            "Orthodontic Maximum Paid to Date": moneyValue(orthoMaxObj.individualAmountUsed ?? pickFinancialLeaf(leaves, { scope: [["ortho", "orthodont"], ["maximum", "max", "lifetime"]], exclude: ["deductible"] }, "used") ?? domValue(dom, ["Orthodontic Maximum Paid to Date", "Ortho Maximum Paid to Date"])),
-            "Waiting Period": provisions.waiting_period,
-            "Dependent Age Limit": provisions.dependent_age_limit
-        };
-    }
-
     function buildFinalOutput(state, rawByCode, run) {
         const memberRoot = state.memberSearchResponse || {};
         const subscribers = Array.isArray(memberRoot.subscribers) ? memberRoot.subscribers : [];
-        const subscriber = state.memberSearchResponse || {};
+        const subscriber = subscribers[0] || {};
         const template = state.procedureTemplate || {};
         const memberSearchRequest = state.memberSearchRequest || {};
         const patient = selectPatient(subscriber, template.memberPersonId);
@@ -631,7 +579,6 @@
             rawByCode.get(code),
             procedureErrors.get(code)
         ));
-        validateProcedureIntegrity(procedures);
         const procMap = Object.fromEntries(procedures.map(item => [item.procedure_code, item]));
 
         const supportCorpus = [memberRoot, ...state.supportingApiResponses.map(item => item.response)];
@@ -642,7 +589,7 @@
         const leaves = flattenLeaves(supportCorpus);
         const dom = buildDomLabelMap();
 
-        const subscriberName = joinName(subscriber.subscriberFirstName || state.procedureTemplate?.subscriberFirstName, subscriber.subscriberLastName || state.procedureTemplate?.subscriberLastName);
+        const subscriberName = joinName(subscriber.subscriberFirstName, subscriber.subscriberLastName);
         const patientName = patient.isSubscriber
             ? subscriberName
             : joinName(patient.record.dependentFirstName, patient.record.dependentLastName);
@@ -664,44 +611,11 @@
         const clientInfo = subscriber.clientInformation || {};
         const preferredNetwork = preferredNetworkName(procedures);
 
-        let maxDed = [];
-        if (Array.isArray(subscriber.maximumsAndDeductions)) maxDed = subscriber.maximumsAndDeductions;
-        else if (subscriber.maximumsAndDeductions && Array.isArray(subscriber.maximumsAndDeductions.accumulators)) maxDed = [subscriber.maximumsAndDeductions];
-        
-        const ppoMaxDed = maxDed.filter(m => (m.networks || []).some(n => n.toLowerCase().includes('ppo dentist')));
-        const accumulators = ppoMaxDed.flatMap(m => m.accumulators || []);
-        const getAccum = (type, category) => accumulators.find(a => a.accumulatorType === type && a.categoryType === category) || {};
-        
-        const annualMaxObj = getAccum("Maximum", "General");
-        const indDedObj = getAccum("Deductible", "General");
-        const orthoDedObj = getAccum("Deductible", "Orthodontic");
-        const orthoMaxObj = getAccum("Maximum", "Orthodontic");
-
-        const annualMax = {
-            total: moneyValue(annualMaxObj.individualAmount ?? pickFinancialLeaf(leaves, { scope: [["annual", "yearly"], ["maximum", "max"]], exclude: ["ortho", "orthodont"] }, "total") ?? domValue(dom, ["Yearly Maximum", "Annual Maximum"])),
-            used: moneyValue(annualMaxObj.individualAmountUsed ?? pickFinancialLeaf(leaves, { scope: [["annual", "yearly"], ["maximum", "max"]], exclude: ["ortho", "orthodont"] }, "used") ?? domValue(dom, ["Yearly Maximum Paid to Date", "Annual Maximum Paid to Date", "Yearly Maximum Used", "Annual Maximum Used"])),
-            remaining: moneyValue(annualMaxObj.individualAmountRemaining ?? pickFinancialLeaf(leaves, { scope: [["annual", "yearly"], ["maximum", "max"]], exclude: ["ortho", "orthodont"] }, "remaining") ?? domValue(dom, ["Yearly Maximum Remaining", "Annual Maximum Remaining"]))
-        };
-        const indDed = {
-            total: moneyValue(indDedObj.individualAmount ?? pickFinancialLeaf(leaves, { scope: [["individual", "member"], ["deductible", "ded"]], exclude: ["family", "ortho", "orthodont"] }, "total") ?? domValue(dom, ["Individual Deductible"])),
-            used: moneyValue(indDedObj.individualAmountUsed ?? pickFinancialLeaf(leaves, { scope: [["individual", "member"], ["deductible", "ded"]], exclude: ["family", "ortho", "orthodont"] }, "used") ?? domValue(dom, ["Individual Deductible Paid to Date", "Individual Deductible Used"])),
-            remaining: moneyValue(indDedObj.individualAmountRemaining ?? pickFinancialLeaf(leaves, { scope: [["individual", "member"], ["deductible", "ded"]], exclude: ["family", "ortho", "orthodont"] }, "remaining") ?? domValue(dom, ["Individual Deductible Remaining"]))
-        };
-        const famDed = {
-            total: moneyValue(indDedObj.familyAmount ?? pickFinancialLeaf(leaves, { scope: [["family"], ["deductible", "ded"]], exclude: ["ortho", "orthodont"] }, "total") ?? domValue(dom, ["Family Deductible"])),
-            used: moneyValue(indDedObj.familyAmountUsed ?? pickFinancialLeaf(leaves, { scope: [["family"], ["deductible", "ded"]], exclude: ["ortho", "orthodont"] }, "used") ?? domValue(dom, ["Family Deductible Paid to Date", "Family Deductible Used"])),
-            remaining: moneyValue(indDedObj.familyAmountRemaining ?? pickFinancialLeaf(leaves, { scope: [["family"], ["deductible", "ded"]], exclude: ["ortho", "orthodont"] }, "remaining") ?? domValue(dom, ["Family Deductible Remaining"]))
-        };
-        const orthoDed = {
-            total: moneyValue(orthoDedObj.individualAmount ?? pickFinancialLeaf(leaves, { scope: [["ortho", "orthodont"], ["deductible", "ded"]], exclude: [] }, "total") ?? domValue(dom, ["Orthodontic Deductible", "Ortho Deductible"])),
-            used: moneyValue(orthoDedObj.individualAmountUsed ?? pickFinancialLeaf(leaves, { scope: [["ortho", "orthodont"], ["deductible", "ded"]], exclude: [] }, "used") ?? domValue(dom, ["Orthodontic Deductible Paid to Date", "Ortho Deductible Paid to Date"])),
-            remaining: moneyValue(orthoDedObj.individualAmountRemaining ?? pickFinancialLeaf(leaves, { scope: [["ortho", "orthodont"], ["deductible", "ded"]], exclude: [] }, "remaining") ?? domValue(dom, ["Orthodontic Deductible Remaining", "Ortho Deductible Remaining"]))
-        };
-        const orthoMax = {
-            total: moneyValue(orthoMaxObj.individualAmount ?? pickFinancialLeaf(leaves, { scope: [["ortho", "orthodont"], ["maximum", "max", "lifetime"]], exclude: ["deductible"] }, "total") ?? domValue(dom, ["Orthodontic Maximum", "Ortho Maximum", "Ortho Lifetime Maximum"])),
-            used: moneyValue(orthoMaxObj.individualAmountUsed ?? pickFinancialLeaf(leaves, { scope: [["ortho", "orthodont"], ["maximum", "max", "lifetime"]], exclude: ["deductible"] }, "used") ?? domValue(dom, ["Orthodontic Maximum Paid to Date", "Ortho Maximum Paid to Date"])),
-            remaining: moneyValue(orthoMaxObj.individualAmountRemaining ?? pickFinancialLeaf(leaves, { scope: [["ortho", "orthodont"], ["maximum", "max", "lifetime"]], exclude: ["deductible"] }, "remaining") ?? domValue(dom, ["Orthodontic Maximum Remaining", "Ortho Maximum Remaining"]))
-        };
+        const annualMax = buildFinancialRecord(leaves, dom, "annual_max");
+        const indDed = buildFinancialRecord(leaves, dom, "individual_deductible");
+        const famDed = buildFinancialRecord(leaves, dom, "family_deductible");
+        const orthoDed = buildFinancialRecord(leaves, dom, "ortho_deductible");
+        const orthoMax = buildFinancialRecord(leaves, dom, "ortho_maximum");
 
         const eligibilityNotes = collectEligibilityNotes(state.supportingApiResponses, procedures);
         const allProcedureText = procedures.map(procedureText).join("\n");
@@ -711,38 +625,34 @@
         const planYearStart = mineValue(leaves, ["plan", "year", "start"], ["date", "month", "effective"])
             || domValue(dom, ["Starting Month of Plan Year", "Plan Year Start"]);
 
-                const waitingPeriod = deriveWaitingPeriod(procedures, subscriber.waitExempted, supportText);
-        const waitingPeriodAppliesTo = deriveWaitingAppliesTo(procedures);
-        const combinedWaitingPeriod = waitingPeriod !== "N/A" ? `${waitingPeriod} (${waitingPeriodAppliesTo})` : "N/A";
-        
-        let actualOrthoAgeLimit = "N/A";
-        if (benefitInfo.orthoAgeLimitConfig && benefitInfo.orthoAgeLimitConfig.length > 0) {
-            const cfg = benefitInfo.orthoAgeLimitConfig[0];
-            actualOrthoAgeLimit = `Student: ${cfg.studentMaxAge || "N/A"}, Minor: ${cfg.minorMaxAge || "N/A"}, Spouse: ${cfg.spouseMaxAge || "N/A"}, IRS: ${cfg.irsMaxAge || "N/A"}`;
-        }
-
-        let actualDepAge = "N/A";
-        if (benefitInfo.ageLimitations) {
-            actualDepAge = `Child: ${benefitInfo.ageLimitations.childMaxAgeLimit || "N/A"}, Student: ${benefitInfo.ageLimitations.studentMaxAgeLimit || "N/A"}`;
-        }
+        const deductiblePreventive = deriveDeductibleApplicability(
+            procedures.filter(item => ["PREVENTATIVE"].includes(item.category)),
+            leaves,
+            "prevent"
+        );
+        const deductibleDiagnostic = deriveDeductibleApplicability(
+            procedures.filter(item => ["EXAMS", "DIAGNOSTIC"].includes(item.category)),
+            leaves,
+            "diagnostic"
+        );
 
         const provisions = {
-            deductible_applies_to_preventive: "N/A", // user disabled
-            deductible_applies_to_diagnostic: "N/A", // user disabled
-            waiting_period: combinedWaitingPeriod,
-            waiting_period_applies_to: waitingPeriodAppliesTo,
-            major_services_paid_on_prep_or_seat: "N/A", // disabled
-            missing_tooth_clause: "N/A", // disabled
-            dependent_age_limit: actualDepAge,
-            d0120_d0150_share_frequency_with_d0140: "N/A", // disabled
-            permanent_unrestored_molars_only: "N/A", // disabled
-            posterior_composites_downgraded_to_amalgam: "N/A", // disabled
-            porcelain_crowns_downgraded_on_posterior_teeth: "N/A", // disabled
-            d2950_same_day_as_crown: "N/A", // disabled
-            d4341_number_of_quads: "N/A", // disabled
-            d4910_d1110_share_frequency: "N/A", // disabled
+            deductible_applies_to_preventive: deductiblePreventive,
+            deductible_applies_to_diagnostic: deductibleDiagnostic,
+            waiting_period: deriveWaitingPeriod(procedures, subscriber.waitExempted, supportText),
+            waiting_period_applies_to: deriveWaitingAppliesTo(procedures),
+            major_services_paid_on_prep_or_seat: prepSeat || "N/A",
+            missing_tooth_clause: missingTooth || "N/A",
+            dependent_age_limit: dependentAge || "N/A",
+            d0120_d0150_share_frequency_with_d0140: sameFrequency(procMap, ["D0120", "D0150", "D0140"]),
+            permanent_unrestored_molars_only: sealantMolarsOnly(procMap.D1351),
+            posterior_composites_downgraded_to_amalgam: posteriorCompositeDowngrade(procMap),
+            porcelain_crowns_downgraded_on_posterior_teeth: porcelainCrownDowngrade(procMap.D2740),
+            d2950_same_day_as_crown: d2950SameDayCrown(procMap),
+            d4341_number_of_quads: numberOfQuads(procMap.D4341),
+            d4910_d1110_share_frequency: sameFrequency(procMap, ["D4910", "D1110"]),
             ortho_payment_frequency: orthoPaymentFrequency(procMap),
-            ortho_age_limit: actualOrthoAgeLimit
+            ortho_age_limit: orthoAgeLimit(procMap)
         };
 
         const insuranceAddress = formatAddress(
@@ -756,14 +666,11 @@
             mineValue(leaves, ["insurance", "phone"], ["phone", "number"]),
             domValue(dom, ["Insurance Phone", "Carrier Phone", "Phone"])
         ]);
-        let patientTermDate = firstMeaningful([
-            patient.isSubscriber ? subscriber.terminationDate : patient.record?.terminationDate,
-            patient.isSubscriber ? subscriber.eligibilityEndDate : patient.record?.eligibilityEndDate,
+        const patientTermDate = firstMeaningful([
+            mineValue(leaves, ["termination", "date"], ["term", "end", "effective"]),
+            mineValue(leaves, ["eligibility", "end"], ["date", "term"]),
             domValue(dom, ["Patient Term Date", "Termination Date", "Coverage End Date"])
         ]);
-        if (String(patientStatus || "").toLowerCase() === "active") {
-            patientTermDate = "";
-        }
         const ssn = firstMeaningful([
             domValue(dom, ["SSN", "Social Security Number"]),
             strictSsnFromText(document.body?.innerText || "")
@@ -779,21 +686,17 @@
         ]);
 
         const groupName = firstMeaningful([
-            benefitInfo.clientName,
-            clientInfo.clientName,
             benefitInfo.subClientName,
-            clientInfo.subClientName
+            benefitInfo.clientName,
+            clientInfo.subClientName,
+            clientInfo.clientName
         ]);
-        
-        let mainGroupNum = firstMeaningful([benefitInfo.clientId, clientInfo.clientSpecifiedId]);
-        let subGroupNum = firstMeaningful([benefitInfo.subClientId, clientInfo.subClientSpecifiedId]);
-        
-        let finalGroupNumber = mainGroupNum || subGroupNum;
-        if (mainGroupNum && subGroupNum && mainGroupNum !== subGroupNum) {
-            finalGroupNumber = `${mainGroupNum}-${subGroupNum}`;
-        }
-        
-        const groupNumber = finalGroupNumber;
+        const groupNumber = firstMeaningful([
+            benefitInfo.subClientId,
+            clientInfo.subClientSpecifiedId,
+            benefitInfo.clientId,
+            clientInfo.clientSpecifiedId
+        ]);
         const planName = firstMeaningful([
             benefitInfo.productName,
             clientInfo.productName,
@@ -807,37 +710,124 @@
         ]);
 
         const output = {
-            "Patient/Subscriber Information": {
-                "Patient Name": patientName,
-                "Date of Birth of the Patient": valueOrNA(patientDob),
-                "Member ID": valueOrNA(memberId),
-                "Relation to Subscriber": relationship,
-                "Subscriber Name": subscriberName,
-                "Date of Birth of the subscriber": valueOrNA(subscriber.dateOfBirth),
-                "SSN": valueOrNA(ssn)
+            source: "Delta Dental Office Toolkit",
+            portal: location.hostname,
+            captured_at: new Date().toISOString(),
+            data_quality: state.memberSearchResponse ? "full_api" : "procedure_api_with_page_fallback",
+            crawl_statistics: {
+                requested_codes: PROCEDURE_CODES.length,
+                successful_codes: procedures.filter(item => !item.error).length,
+                failed_codes: procedures.filter(item => item.error).map(item => item.procedure_code),
+                supporting_api_responses: state.supportingApiResponses.length,
+                duration_ms: Date.now() - run.startedAt
             },
-            "Insurance Information": {
-                "Insurance Name": "Delta Dental",
-                "Group Name": valueOrNA(groupName),
-                "Group Number": valueOrNA(groupNumber),
-                "Patient Eff Date": valueOrNA(patientEffective),
-                "Patient Term Date": valueOrNA(patientTermDate),
-                "Starting Month of Plan Year": valueOrNA(planYearStart),
-                "Payor ID": valueOrNA(claimInfo.payorId)
+            summary: {
+                insurer: "Delta Dental",
+                group_name: groupName,
+                group_number: groupNumber,
+                plan_name: planName,
+                payor_id: valueOrNA(claimInfo.payorId)
             },
-            "Coverage and Maximums": buildCoverageAndMaximums(subscriber, leaves, dom),
-            "General Benefit Categories": buildRequestedFieldMap(procMap, provisions),
-            "Routine Procedures": ppoRoutine.routineProcedures,
-            "Plan Provisions": {
-                "Waiting Period": combinedWaitingPeriod,
-                "Dependent Age Limit": actualDepAge,
-                "Ortho Age Limits": actualOrthoAgeLimit
+            patient: {
+                name: patientName,
+                dob: valueOrNA(patientDob),
+                member_id: valueOrNA(memberId),
+                relationship,
+                eligibility_status: valueOrNA(patientStatus),
+                effective_date: valueOrNA(patientEffective),
+                termination_date: valueOrNA(patientTermDate)
             },
-            "Extraction Metadata": {
-                "Source": "Delta Dental Office Toolkit",
-                "Portal": location.hostname,
-                "Captured At": new Date().toISOString(),
-                "Data Quality": state.memberSearchResponse ? "full_api" : "procedure_api_with_page_fallback"
+            subscriber: {
+                name: subscriberName,
+                dob: valueOrNA(subscriber.dateOfBirth),
+                member_id: valueOrNA(memberId),
+                ssn: valueOrNA(ssn)
+            },
+            plan_details: {
+                insurance_name: "Delta Dental",
+                group_name: groupName,
+                group_number: groupNumber,
+                plan_name: planName,
+                plan_code: firstMeaningful([benefitInfo.plan, clientInfo.adminPlan, clientInfo.planAbbrev]),
+                product_name: firstMeaningful([benefitInfo.productName, clientInfo.productName]),
+                fee_schedule: valueOrNA(feeSchedule),
+                insurance_address: valueOrNA(insuranceAddress),
+                insurance_phone: valueOrNA(insurancePhone),
+                provider_network_status: valueOrNA(providerNetworkStatus),
+                patient_effective_date: valueOrNA(patientEffective),
+                patient_termination_date: valueOrNA(patientTermDate),
+                starting_month_of_plan_year: valueOrNA(planYearStart),
+                payor_id: valueOrNA(claimInfo.payorId),
+                client_id: firstMeaningful([benefitInfo.clientId, clientInfo.clientSpecifiedId]),
+                sub_client_id: firstMeaningful([benefitInfo.subClientId, clientInfo.subClientSpecifiedId]),
+                network: valueOrNA(preferredNetwork)
+            },
+            eligibility_notes: eligibilityNotes.length ? eligibilityNotes : ["N/A"],
+            financials: {
+                annual_max: annualMax,
+                deductible_ind: indDed,
+                deductible_fam: famDed,
+                ortho_deductible: orthoDed,
+                ortho_lifetime: orthoMax
+            },
+            provisions,
+            covered_services: buildCoveredServices(procedures),
+            benefit_coverage: {
+                source: "Delta Toolkit Procedure Benefits API",
+                procedure_count: procedures.length,
+                procedures
+            },
+            toolkit: {
+                patient_subscriber_information: {
+                    patient_name: patientName,
+                    patient_dob: valueOrNA(patientDob),
+                    member_id: valueOrNA(memberId),
+                    relation_to_subscriber: relationship,
+                    subscriber_name: subscriberName,
+                    subscriber_dob: valueOrNA(subscriber.dateOfBirth),
+                    ssn: valueOrNA(ssn)
+                },
+                insurance_information: {
+                    insurance_name: "Delta Dental",
+                    group_name: groupName,
+                    group_number: groupNumber,
+                    fee_schedule: valueOrNA(feeSchedule),
+                    insurance_address: valueOrNA(insuranceAddress),
+                    insurance_phone: valueOrNA(insurancePhone),
+                    provider_network_status: valueOrNA(providerNetworkStatus),
+                    patient_effective_date: valueOrNA(patientEffective),
+                    patient_termination_date: valueOrNA(patientTermDate),
+                    starting_month_of_plan_year: valueOrNA(planYearStart),
+                    payor_id: valueOrNA(claimInfo.payorId)
+                },
+                coverage_and_maximums: {
+                    yearly_maximum: annualMax.total,
+                    yearly_remaining: annualMax.remaining,
+                    individual_deductible_total: indDed.total,
+                    individual_deductible_paid_to_date: indDed.used,
+                    individual_deductible_remaining: indDed.remaining,
+                    family_deductible_total: famDed.total,
+                    family_deductible_paid_to_date: famDed.used,
+                    family_deductible_remaining: famDed.remaining,
+                    orthodontic_deductible: orthoDed.total,
+                    orthodontic_deductible_paid_to_date: orthoDed.used,
+                    orthodontic_maximum: orthoMax.total,
+                    orthodontic_maximum_paid_to_date: orthoMax.used
+                },
+                requested_field_map: buildRequestedFieldMap(procMap, provisions),
+                captured_endpoints: uniqueStrings([
+                    MEMBER_SEARCH_PATH,
+                    PROCEDURE_SEARCH_PATH,
+                    ...state.supportingApiResponses.map(item => item.endpoint)
+                ]),
+                raw_supporting_responses: state.supportingApiResponses.map(item => sanitizeForOutput(item)),
+                missing_fields: listMissingRequestedFields({
+                    patientName, patientDob, memberId, relationship, subscriberName,
+                    subscriberDob: subscriber.dateOfBirth, ssn, groupName, groupNumber,
+                    feeSchedule, insuranceAddress, insurancePhone, providerNetworkStatus,
+                    patientEffective, patientTermDate, planYearStart, payorId: claimInfo.payorId,
+                    annualMax, indDed, famDed, orthoDed, orthoMax
+                })
             }
         };
 
@@ -865,7 +855,7 @@
             };
         }
 
-        const networkRecords = raw.map(bucket => normalizeNetworkBucket(code, bucket)).filter(Boolean).filter(n => (n.network || "").toLowerCase().includes("ppo dentist"));
+        const networkRecords = raw.map(bucket => normalizeNetworkBucket(code, bucket)).filter(Boolean);
         const preferred = choosePreferredNetwork(networkRecords);
         const other = networkRecords.filter(item => item !== preferred);
         const allLimitations = uniqueStrings(networkRecords.flatMap(item => item.limitations));
@@ -894,7 +884,7 @@
             number_of_quads: parseQuads(allLimitations.join(" ")) || "N/A",
             exclusions_and_limitations: allLimitations,
             networks: networkRecords,
-            
+            raw_api_response: sanitizeForOutput(raw),
             error: error || null
         };
     }
@@ -930,7 +920,18 @@
             frequency_limit: parseFrequency(limitations),
             waiting_periods: waiting,
             limitations,
-            history_dates: historyDates
+            history_dates: historyDates,
+            utilization_benefits: sanitizeForOutput(utilization),
+            coverage_path: sanitizeForOutput(coverages.map(item => ({
+                level: item.level,
+                procedure: item.procedure,
+                procedure_id: item.procedureId,
+                coverage: item.coverage,
+                exclusions_and_limitations: item.exclusionsAndLimitations,
+                waiting_periods: item.waitingPeriods,
+                radio_graphs_required: item.radioGraphsRequired,
+                remarks_required: item.remarksRequired
+            })))
         };
     }
 
@@ -947,15 +948,15 @@
             }
         }
 
-        map.exams["Do D0120, D0150 Share a frequency with D0140?"] = provisions.d0120_d0150_share_frequency_with_d0140;
-        map.preventative["Permanent Un-restored Molars only?"] = provisions.permanent_unrestored_molars_only;
-        map.basicRestorative["Posterior composites downgraded to amalgam?"] = provisions.posterior_composites_downgraded_to_amalgam;
-        map.majorRestorative["Porcelain crowns downgraded on posterior teeth"] = provisions.porcelain_crowns_downgraded_on_posterior_teeth;
-        map.majorRestorative["Can D2950 be done same day as crown?"] = provisions.d2950_same_day_as_crown;
-        map.periodontics["Number of quads for code D4341"] = provisions.d4341_number_of_quads;
-        map.periodontics["Do D4910 and D1110 share a frequency?"] = provisions.d4910_d1110_share_frequency;
-        map.orthodontics["Payment Frequency"] = provisions.ortho_payment_frequency;
-        map.orthodontics["Ortho Age Limit"] = provisions.ortho_age_limit;
+        map.EXAMS["Do D0120,D0150 Share a frequency with D0140?"] = provisions.d0120_d0150_share_frequency_with_d0140;
+        map.PREVENTATIVE["Permanent Un-restored Molars only?"] = provisions.permanent_unrestored_molars_only;
+        map["BASIC RESTORATIVE"]["Posterior composites downgraded to amalgam?"] = provisions.posterior_composites_downgraded_to_amalgam;
+        map["MAJOR RESTORATIVE"]["Porcelain crowns downgraded on posterior teeth"] = provisions.porcelain_crowns_downgraded_on_posterior_teeth;
+        map["MAJOR RESTORATIVE"]["Can D2950 be done same day as crown?"] = provisions.d2950_same_day_as_crown;
+        map.PERIODONTICS["Number of quads for the code D4341"] = provisions.d4341_number_of_quads;
+        map.PERIODONTICS["Do D4910 and D1110 share a frequency?"] = provisions.d4910_d1110_share_frequency;
+        map.ORTHODONTICS["Payment Frequency"] = provisions.ortho_payment_frequency;
+        map.ORTHODONTICS["Ortho Age Limit"] = provisions.ortho_age_limit;
         return map;
     }
 
@@ -1113,24 +1114,19 @@
     }
 
     function collectEligibilityNotes(supporting, procedures) {
-        const structuredNotes = {};
+        const notes = [];
         for (const item of supporting) {
-            const res = item.response;
-            if (res.messages) structuredNotes["Global Messages"] = res.messages;
-            if (res.subscribers && res.subscribers[0]) {
-                const sub = res.subscribers[0];
-                if (sub.claimBenefitInfo && sub.claimBenefitInfo.messages) {
-                    structuredNotes["Benefit Messages"] = sub.claimBenefitInfo.messages;
+            const leaves = flattenLeaves([item.response]);
+            for (const leaf of leaves) {
+                if (typeof leaf.value !== "string") continue;
+                if (/eligib|note|remark|message|restriction|exclusion|limitation|warning/i.test(leaf.normalizedPath)) {
+                    const value = cleanText(leaf.value);
+                    if (value.length > 2 && value.length < 1200) notes.push(value);
                 }
             }
         }
-        structuredNotes["Procedure Limitations"] = {};
-        for (const proc of procedures) {
-            if (proc.exclusions_and_limitations && proc.exclusions_and_limitations.length > 0) {
-                structuredNotes["Procedure Limitations"][proc.procedure_code] = proc.exclusions_and_limitations;
-            }
-        }
-        return structuredNotes;
+        for (const proc of procedures) notes.push(...toArray(proc.exclusions_and_limitations));
+        return uniqueStrings(notes).slice(0, 150);
     }
 
     function buildCoveredServices(procedures) {
@@ -1536,8 +1532,6 @@
             const payload = {
                 memberSearchRequest: sanitizeForOutput(state.memberSearchRequest),
                 memberSearchResponse: sanitizeForOutput(state.memberSearchResponse),
-                routineProceduresResponse: sanitizeForOutput(state.routineProceduresResponse),
-                clientSearchResponse: sanitizeForOutput(state.clientSearchResponse),
                 procedureTemplate: sanitizeForOutput(state.procedureTemplate)
             };
             sessionStorage.setItem("toolkit_capture_v1", JSON.stringify(payload));
@@ -1552,8 +1546,6 @@
             if (!saved) return;
             state.memberSearchRequest = saved.memberSearchRequest || null;
             state.memberSearchResponse = saved.memberSearchResponse || null;
-            state.routineProceduresResponse = saved.routineProceduresResponse || null;
-            state.clientSearchResponse = saved.clientSearchResponse || null;
             state.procedureTemplate = saved.procedureTemplate || null;
             // Authorization is intentionally never persisted. A fresh manual lookup
             // is still required after a full page/browser session reload if the API
@@ -1563,6 +1555,23 @@
 
     function postPageMessage(type, payload) {
         window.postMessage({ source: PAGE_SOURCE, type, ...payload }, window.location.origin);
+    }
+
+    function setStatus(state, text, mode) {
+        if (state.statusEl) {
+            state.statusEl.textContent = text;
+            state.statusEl.style.color = mode === "error" ? "#b91c1c" : mode === "ready" ? "#166534" : "#475569";
+        }
+        postPageMessage("STATUS", { status: text, mode });
+        console.info(`Delta Toolkit: ${text}`);
+    }
+
+    function setBusy(state, busy) {
+        if (state.buttonEl) {
+            state.buttonEl.disabled = busy;
+            state.buttonEl.style.opacity = busy ? ".65" : "1";
+            state.buttonEl.style.cursor = busy ? "wait" : "pointer";
+        }
     }
 
     function validateProcedureIntegrity(procedures) {
