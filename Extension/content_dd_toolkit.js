@@ -1,5 +1,5 @@
 /*
- * content_toolkit.js
+ * content_dentaquest.js
  * Delta Dental Office Toolkit benefit extractor
  *
  * No background/service worker is used.
@@ -9,13 +9,13 @@
  * "content_scripts": [
  *   {
  *     "matches": ["https://www.dentalofficetoolkit.com/*"],
- *     "js": ["content_toolkit.js"],
+ *     "js": ["content_dentaquest.js"],
  *     "run_at": "document_start",
  *     "world": "MAIN"
  *   },
  *   {
  *     "matches": ["https://www.dentalofficetoolkit.com/*"],
- *     "js": ["content_toolkit.js"],
+ *     "js": ["content_dentaquest.js"],
  *     "run_at": "document_start",
  *     "world": "ISOLATED"
  *   }
@@ -38,7 +38,7 @@
 
     const EXT_SOURCE = "delta-toolkit-extension";
     const PAGE_SOURCE = "delta-toolkit-page";
-    const RESULT_STORAGE_KEY = "toolkit_data";
+    const RESULT_STORAGE_KEY = "dentaquest_data";
     const TARGET_ORIGIN = "https://www.dentalofficetoolkit.com";
     const MEMBER_SEARCH_PATH = "/api/dot-gateway/v1/benefit/memberbenefits/search";
     const PROCEDURE_SEARCH_PATH = "/api/dot-gateway/v1/benefit/memberbenefits/procedures/search";
@@ -170,6 +170,12 @@
                 });
             }
 
+            if (message.type === "STATUS") {
+                try {
+                    chrome.runtime.sendMessage({ command: "STATUS_UPDATE", status: message.status });
+                } catch (e) {}
+            }
+
             if (message.type === "ERROR") {
                 const wait = pending.get(message.requestId);
                 if (wait) {
@@ -189,7 +195,7 @@
                 if (!wait) return;
                 pending.delete(requestId);
                 sendResponse({
-                    status: "[!] The MAIN-world extractor did not respond. Load content_toolkit.js in both MAIN and ISOLATED worlds as shown at the top of the file."
+                    status: "[!] The MAIN-world extractor did not respond. Load content_dentaquest.js in both MAIN and ISOLATED worlds as shown at the top of the file."
                 });
             }, 12000);
 
@@ -244,7 +250,7 @@
         interceptFetch(state, nativeFetch);
         interceptXHR(state, NativeXHR);
         installPageMessageBridge(state, nativeFetch);
-        installFloatingUiWhenReady(state, nativeFetch);
+        // installFloatingUiWhenReady removed to avoid conflicting separate popup
 
         console.info("Delta Toolkit extractor installed. Perform one normal procedure lookup so the authenticated request template can be learned.");
     }
@@ -466,6 +472,25 @@
 
         if (!state.procedureTemplate) {
             throw new Error("No authenticated procedure request has been captured. Perform one ordinary procedure-code lookup in the Toolkit, then run the extractor again.");
+        }
+
+        if (!state.procedureHeaders || !state.procedureHeaders.authorization || !state.procedureTemplate.headers || !state.procedureTemplate.headers.authorization) {
+            setStatus(state, "Refreshing API session token automatically...", "working");
+            try {
+                await new Promise(resolve => {
+                    const searchBtn = Array.from(document.querySelectorAll("button")).find(b => (b.textContent || "").trim() === "Search");
+                    if (searchBtn) {
+                        searchBtn.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
+                        searchBtn.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
+                        searchBtn.click();
+                    } else {
+                        console.warn("Delta Toolkit: Could not find Search button to refresh token.");
+                    }
+                    setTimeout(resolve, 1500);
+                });
+            } catch (err) {
+                console.warn("Delta Toolkit: Error clicking dummy search button", err);
+            }
         }
 
         setBusy(state, true);
@@ -777,7 +802,7 @@
                 procedure_count: procedures.length,
                 procedures
             },
-            toolkit: {
+            delta_toolkit: {
                 patient_subscriber_information: {
                     patient_name: patientName,
                     patient_dob: valueOrNA(patientDob),
@@ -1532,9 +1557,16 @@
             const payload = {
                 memberSearchRequest: sanitizeForOutput(state.memberSearchRequest),
                 memberSearchResponse: sanitizeForOutput(state.memberSearchResponse),
-                procedureTemplate: sanitizeForOutput(state.procedureTemplate)
+                procedureTemplate: (function() {
+                    const cloned = sanitizeForOutput(state.procedureTemplate);
+                    if (cloned && cloned.headers) {
+                        delete cloned.headers.authorization;
+                        delete cloned.headers.Authorization;
+                    }
+                    return cloned;
+                })()
             };
-            sessionStorage.setItem("toolkit_capture_v1", JSON.stringify(payload));
+            sessionStorage.setItem("delta_toolkit_capture_v1", JSON.stringify(payload));
         } catch (_) { /* storage may be unavailable */ }
     }
 
@@ -1542,7 +1574,7 @@
         if (state.hydrated) return;
         state.hydrated = true;
         try {
-            const saved = safeJsonParse(sessionStorage.getItem("toolkit_capture_v1"));
+            const saved = safeJsonParse(sessionStorage.getItem("delta_toolkit_capture_v1"));
             if (!saved) return;
             state.memberSearchRequest = saved.memberSearchRequest || null;
             state.memberSearchResponse = saved.memberSearchResponse || null;
@@ -1591,7 +1623,7 @@
     function downloadJson(data) {
         const patient = String(data?.patient?.name || "patient").replace(/[^A-Za-z0-9_-]+/g, "_").replace(/^_+|_+$/g, "") || "patient";
         const date = new Date().toISOString().slice(0, 10);
-        const filename = `toolkit_${patient}_${date}.json`;
+        const filename = `delta_toolkit_${patient}_${date}.json`;
         const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
         const url = URL.createObjectURL(blob);
         const anchor = document.createElement("a");
