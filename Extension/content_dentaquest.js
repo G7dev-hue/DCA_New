@@ -1396,6 +1396,27 @@
     if (event.data.type === "capture") extractor.capture(event.data.url, event.data.data);
   });
 
+  function autoDownloadJSON(data) {
+    try {
+        const json  = JSON.stringify(data, null, 2);
+        const blob  = new Blob([json], { type: 'application/json' });
+        const url   = URL.createObjectURL(blob);
+        const nameText = data?.["Patient/Subscriber Information"]?.["Patient Name"] || 'patient';
+        const name  = nameText.replace(/[^a-z0-9]+/gi, '_').replace(/^_|_$/g, '');
+        const date  = new Date().toISOString().slice(0, 10);
+        const fname = `dentaquest_${name}_${date}.json`;
+        const a     = document.createElement('a');
+        a.href      = url;
+        a.download  = fname;
+        document.body.appendChild(a);
+        a.click();
+        setTimeout(() => { document.body.removeChild(a); URL.revokeObjectURL(url); }, 1500);
+        console.log('DentaQuest: Auto-downloaded →', fname);
+    } catch (e) {
+        console.error('DentaQuest: Auto-download failed', e);
+    }
+  }
+
   let activeRun = null;
   chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     if (request?.command !== "START_CRAWL") return;
@@ -1421,14 +1442,19 @@
       output.data_quality = missing.length ? "partial_api" : "full_api";
       output.popup_integration = { command:"START_CRAWL", storage_key:"audit_context.dentaquest_data", captured_endpoint_count:captured.length, missing_core_endpoints:missing };
 
+      autoDownloadJSON(output);
+
       const stored = await storageGet("audit_context");
       const context = stored.audit_context || {};
       context.dentaquest_data = output;
       await storageSet({ audit_context: context });
+      
+      // Clear after download
+      await clearPreviousData();
 
-      setStatus(missing.length ? `Saved with ${captured.length} endpoints. Missing: ${missing.join(", ")}. Use the popup Download button.` : `Crawl complete. ${captured.length} endpoints saved. Use the popup Download button.`);
+      setStatus(missing.length ? `Saved with ${captured.length} endpoints. Missing: ${missing.join(", ")}. JSON downloaded automatically.` : `Crawl complete. ${captured.length} endpoints saved. JSON downloaded automatically.`);
       unlockPage(2200);
-      return { status: missing.length ? `[+] DentaQuest saved with warnings. Missing: ${missing.join(", ")}.` : `[+] DentaQuest crawl complete. ${captured.length} endpoints saved.` };
+      return { status: missing.length ? `[+] DentaQuest saved with warnings. Missing: ${missing.join(", ")}. JSON downloaded.` : `[+] DentaQuest crawl complete. JSON downloaded.` };
     })().then(sendResponse).catch(error => {
       console.error("DentaQuest crawl error:", error);
       setStatus(`Crawl failed: ${error.message}`, true);

@@ -244,7 +244,6 @@
         interceptFetch(state, nativeFetch);
         interceptXHR(state, NativeXHR);
         installPageMessageBridge(state, nativeFetch);
-        installFloatingUiWhenReady(state, nativeFetch);
 
         console.info("Delta Toolkit extractor installed. Perform one normal procedure lookup so the authenticated request template can be learned.");
     }
@@ -345,7 +344,6 @@
             state.memberSearchRequest = body || state.memberSearchRequest;
             state.memberSearchResponse = responseData;
             persistNonSecretState(state);
-            setStatus(state, "Member details captured. Run one procedure lookup if you have not already.", "ready");
             return;
         }
 
@@ -356,7 +354,6 @@
                 const codes = extractCodes(body.procedureCodes);
                 if (codes.length === 1) state.procedureResponses.set(codes[0], responseData);
                 persistNonSecretState(state);
-                setStatus(state, "Authenticated procedure request learned. Ready to extract all codes.", "ready");
             }
             return;
         }
@@ -394,54 +391,7 @@
         });
     }
 
-    function installFloatingUiWhenReady(state, nativeFetch) {
-        const install = () => {
-            if (!document.documentElement || document.getElementById("delta-toolkit-extractor-ui")) return;
 
-            const root = document.createElement("div");
-            root.id = "delta-toolkit-extractor-ui";
-            root.style.cssText = [
-                "position:fixed", "right:18px", "bottom:18px", "z-index:2147483647",
-                "width:300px", "font:13px/1.4 Arial,sans-serif", "background:#fff",
-                "color:#172033", "border:1px solid #9db3c7", "border-radius:10px",
-                "box-shadow:0 8px 28px rgba(0,0,0,.22)", "padding:12px"
-            ].join(";");
-
-            const title = document.createElement("div");
-            title.textContent = "Delta Toolkit Extractor";
-            title.style.cssText = "font-weight:700;margin-bottom:6px;color:#075985";
-
-            const status = document.createElement("div");
-            status.style.cssText = "min-height:36px;margin-bottom:9px;color:#475569";
-            status.textContent = state.procedureTemplate
-                ? "Authenticated request learned. Ready."
-                : "Run one normal procedure-code lookup first.";
-
-            const button = document.createElement("button");
-            button.type = "button";
-            button.textContent = "Extract Delta Benefits";
-            button.style.cssText = [
-                "width:100%", "border:0", "border-radius:7px", "padding:9px 12px",
-                "font-weight:700", "cursor:pointer", "background:#0e7490", "color:#fff"
-            ].join(";");
-            button.addEventListener("click", () => {
-                const requestId = makeId();
-                startCrawl(state, nativeFetch, requestId).catch(error => {
-                    setStatus(state, error.message, "error");
-                    postPageMessage("ERROR", { requestId, error: error.message });
-                });
-            });
-
-            root.append(title, status, button);
-            document.documentElement.appendChild(root);
-            state.statusEl = status;
-            state.buttonEl = button;
-        };
-
-        if (document.readyState === "loading") {
-            document.addEventListener("DOMContentLoaded", install, { once: true });
-        } else install();
-    }
 
     async function startCrawl(state, nativeFetch, requestId) {
         if (state.activeRun && !state.activeRun.done) {
@@ -455,22 +405,36 @@
         state.activeRun = run;
 
         if (!state.procedureTemplate) {
-            throw new Error("No authenticated procedure request has been captured. Perform one ordinary procedure-code lookup in the Toolkit, then run the extractor again.");
+            console.info("Delta Toolkit: Attempting automated initial procedure lookup...");
+            const input = document.querySelector('input[formcontrolname="procedureCode"], input[placeholder*="procedure" i], input[placeholder*="code" i], input[aria-label*="procedure" i], input[id*="procedure" i], input[name*="procedure" i]');
+            const buttons = Array.from(document.querySelectorAll('button'));
+            const searchBtn = buttons.find(b => /(search|submit|lookup|find)/i.test(b.textContent) && b.offsetParent !== null && !b.disabled);
+            
+            if (input && searchBtn) {
+                input.value = "D0120";
+                input.dispatchEvent(new Event("input", { bubbles: true }));
+                input.dispatchEvent(new Event("change", { bubbles: true }));
+                searchBtn.click();
+                
+                for (let i = 0; i < 20; i++) {
+                    await sleep(250);
+                    if (state.procedureTemplate) break;
+                }
+            }
         }
 
-        setBusy(state, true);
-        setStatus(state, `Starting ${PROCEDURE_CODES.length}-code extraction…`, "working");
+        if (!state.procedureTemplate) {
+            throw new Error("Could not automatically trigger a procedure search. Please perform one ordinary procedure-code lookup on the page first, then run the extractor again.");
+        }
 
         try {
             const rawByCode = await fetchAllProcedures(state, nativeFetch, run);
             if (run.cancelled) throw new Error("This extraction was superseded by a newer run.");
 
-            setStatus(state, "Normalizing member, plan, financial, and procedure details…", "working");
             const data = buildFinalOutput(state, rawByCode, run);
 
             run.done = true;
             postPageMessage("RESULT", { requestId, data });
-            setStatus(state, `Done — ${PROCEDURE_CODES.length} codes extracted.`, "ready");
 
             // If the ISOLATED-world bridge is present, it acknowledges and handles
             // storage/download. Otherwise the MAIN-world UI still works standalone.
@@ -479,7 +443,6 @@
             return data;
         } finally {
             run.done = true;
-            setBusy(state, false);
         }
     }
 
@@ -501,7 +464,6 @@
                     results.set(code, null);
                 }
                 completed += 1;
-                setStatus(state, `Extracting procedure benefits: ${completed}/${PROCEDURE_CODES.length}`, "working");
                 await sleep(120 + Math.floor(Math.random() * 140));
             }
         });
@@ -1477,23 +1439,6 @@
 
     function postPageMessage(type, payload) {
         window.postMessage({ source: PAGE_SOURCE, type, ...payload }, window.location.origin);
-    }
-
-    function setStatus(state, text, mode) {
-        if (state.statusEl) {
-            state.statusEl.textContent = text;
-            state.statusEl.style.color = mode === "error" ? "#b91c1c" : mode === "ready" ? "#166534" : "#475569";
-        }
-        postPageMessage("STATUS", { status: text, mode });
-        console.info(`Delta Toolkit: ${text}`);
-    }
-
-    function setBusy(state, busy) {
-        if (state.buttonEl) {
-            state.buttonEl.disabled = busy;
-            state.buttonEl.style.opacity = busy ? ".65" : "1";
-            state.buttonEl.style.cursor = busy ? "wait" : "pointer";
-        }
     }
 
     function validateProcedureIntegrity(procedures) {
