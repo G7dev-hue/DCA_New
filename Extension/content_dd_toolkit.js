@@ -638,37 +638,26 @@
         const planYearStart = mineValue(leaves, ["plan", "year", "start"], ["date", "month", "effective"])
             || domValue(dom, ["Starting Month of Plan Year", "Plan Year Start"]);
 
-        // DCA requested that we do NOT invent answers for provisions using heuristic text parsing.
-        // We will leave these blank ("N/A") unless they exist strictly as explicit properties in the API.
-        // For example, orthoAgeLimit exists in the API's orthoAgeLimitConfig.
-        /*
-        const deductiblePreventive = deriveDeductibleApplicability(procedures.filter(item => ["preventative"].includes(item.category)), leaves, "prevent");
-        const deductibleDiagnostic = deriveDeductibleApplicability(procedures.filter(item => ["exams", "diagnostic"].includes(item.category)), leaves, "diagnostic");
-        const waitingPeriod = deriveWaitingPeriod(procedures, subscriber.waitExempted, supportText);
-        */
-
+                const waitingPeriod = deriveWaitingPeriod(procedures, subscriber.waitExempted, supportText);
+        const waitingPeriodAppliesTo = deriveWaitingAppliesTo(procedures);
+        const combinedWaitingPeriod = waitingPeriod !== "N/A" ? `${waitingPeriod} (${waitingPeriodAppliesTo})` : "N/A";
+        
         let actualOrthoAgeLimit = "N/A";
         if (benefitInfo.orthoAgeLimitConfig && benefitInfo.orthoAgeLimitConfig.length > 0) {
-            actualOrthoAgeLimit = String(benefitInfo.orthoAgeLimitConfig[0].minorMaxAge || benefitInfo.orthoAgeLimitConfig[0].irsMaxAge || "N/A");
+            const cfg = benefitInfo.orthoAgeLimitConfig[0];
+            actualOrthoAgeLimit = `Student: ${cfg.studentMaxAge || "N/A"}, Minor: ${cfg.minorMaxAge || "N/A"}, Spouse: ${cfg.spouseMaxAge || "N/A"}, IRS: ${cfg.irsMaxAge || "N/A"}`;
+        }
+
+        let actualDepAge = "N/A";
+        if (benefitInfo.ageLimitations) {
+            actualDepAge = `Child: ${benefitInfo.ageLimitations.childMaxAgeLimit || "N/A"}, Student: ${benefitInfo.ageLimitations.studentMaxAgeLimit || "N/A"}`;
         }
 
         const provisions = {
-            deductible_applies_to_preventive: "N/A", // deductiblePreventive
-            deductible_applies_to_diagnostic: "N/A", // deductibleDiagnostic
-            waiting_period: "N/A", // waitingPeriod
-            waiting_period_applies_to: "N/A", // deriveWaitingAppliesTo(procedures)
-            major_services_paid_on_prep_or_seat: "N/A", // prepSeat || "N/A"
-            missing_tooth_clause: "N/A", // missingTooth || "N/A"
-            dependent_age_limit: "N/A", // dependentAge || "N/A"
-            d0120_d0150_share_frequency_with_d0140: "N/A", // sameFrequency(procMap, ["D0120", "D0150", "D0140"])
-            permanent_unrestored_molars_only: "N/A", // sealantMolarsOnly(procMap.D1351)
-            posterior_composites_downgraded_to_amalgam: "N/A", // posteriorCompositeDowngrade(procMap)
-            porcelain_crowns_downgraded_on_posterior_teeth: "N/A", // porcelainCrownDowngrade(procMap.D2740)
-            d2950_same_day_as_crown: "N/A", // d2950SameDayCrown(procMap)
-            d4341_number_of_quads: "N/A", // numberOfQuads(procMap.D4341)
-            d4910_d1110_share_frequency: "N/A", // sameFrequency(procMap, ["D4910", "D1110"])
-            ortho_payment_frequency: "N/A", // orthoPaymentFrequency(procMap)
-            ortho_age_limit: actualOrthoAgeLimit // natively from API, not heuristic!
+            waiting_period: combinedWaitingPeriod,
+            dependent_age_limit: actualDepAge,
+            ortho_payment_frequency: orthoPaymentFrequency(procMap),
+            ortho_age_limit: actualOrthoAgeLimit
         };
 
         const insuranceAddress = formatAddress(
@@ -682,11 +671,14 @@
             mineValue(leaves, ["insurance", "phone"], ["phone", "number"]),
             domValue(dom, ["Insurance Phone", "Carrier Phone", "Phone"])
         ]);
-        const patientTermDate = firstMeaningful([
+        let patientTermDate = firstMeaningful([
             patient.isSubscriber ? subscriber.terminationDate : patient.record?.terminationDate,
             patient.isSubscriber ? subscriber.eligibilityEndDate : patient.record?.eligibilityEndDate,
             domValue(dom, ["Patient Term Date", "Termination Date", "Coverage End Date"])
         ]);
+        if (String(patientStatus || "").toLowerCase() === "active") {
+            patientTermDate = "";
+        }
         const ssn = firstMeaningful([
             domValue(dom, ["SSN", "Social Security Number"]),
             strictSsnFromText(document.body?.innerText || "")
@@ -743,36 +735,16 @@
                 "Insurance Name": "Delta Dental",
                 "Group Name": valueOrNA(groupName),
                 "Group Number": valueOrNA(groupNumber),
-                "Fee Schedule": valueOrNA(feeSchedule),
-                "Insurance Address": valueOrNA(insuranceAddress),
-                "Insurance Phone": valueOrNA(insurancePhone),
-                "Provider Network Status": valueOrNA(providerNetworkStatus),
                 "Patient Eff Date": valueOrNA(patientEffective),
                 "Patient Term Date": valueOrNA(patientTermDate),
                 "Starting Month of Plan Year": valueOrNA(planYearStart),
                 "Payor ID": valueOrNA(claimInfo.payorId)
             },
-            "Eligibility Notes": eligibilityNotes.length ? eligibilityNotes : ["N/A"],
-            "Coverage and Maximums": {
-                "Yearly Maximum": annualMax.total,
-                "Remaining": annualMax.remaining,
-                "Individual Deductible Paid to Date": indDed.used,
-                "Individual Deductible Remaining": indDed.remaining,
-                "Family Deductible Paid to Date": famDed.used,
-                "Family Deductible Remaining": famDed.remaining,
-                "Deductible Applies to Preventive": provisions.deductible_applies_to_preventive,
-                "Deductible Applies to Diagnostic": provisions.deductible_applies_to_diagnostic,
-                "Is there a Waiting Period": provisions.waiting_period !== "N/A" && provisions.waiting_period !== "No" ? "Yes" : provisions.waiting_period,
+            "Eligibility Notes": eligibilityNotes,
+            "Coverage and Maximums": subscriber.maximumsAndDeductions || [],
+            "Plan Provisions": {
                 "Waiting Period": provisions.waiting_period,
-                "Applies to": provisions.waiting_period_applies_to,
-                "Are Major Services Paid on Prep": provisions.major_services_paid_on_prep_or_seat,
-                "Or Seat": provisions.major_services_paid_on_prep_or_seat === "Seat" ? "Yes" : "N/A",
-                "Does Missing Tooth Clause Apply?": provisions.missing_tooth_clause,
-                "Dependent Age Limit": provisions.dependent_age_limit,
-                "Orthodontic Deductible": orthoDed.total,
-                "Orthodontic Deductible Paid to Date": orthoDed.used,
-                "Orthodontic Maximum": orthoMax.total,
-                "Orthodontic Maximum Paid to Date": orthoMax.used
+                "Dependent Age Limit": provisions.dependent_age_limit
             },
             "General Benefit Categories": buildRequestedFieldMap(procMap, provisions),
             "Extraction Metadata": {
@@ -1055,19 +1027,24 @@
     }
 
     function collectEligibilityNotes(supporting, procedures) {
-        const notes = [];
+        const structuredNotes = {};
         for (const item of supporting) {
-            const leaves = flattenLeaves([item.response]);
-            for (const leaf of leaves) {
-                if (typeof leaf.value !== "string") continue;
-                if (/eligib|note|remark|message|restriction|exclusion|limitation|warning/i.test(leaf.normalizedPath)) {
-                    const value = cleanText(leaf.value);
-                    if (value.length > 2 && value.length < 1200) notes.push(value);
+            const res = item.response;
+            if (res.messages) structuredNotes["Global Messages"] = res.messages;
+            if (res.subscribers && res.subscribers[0]) {
+                const sub = res.subscribers[0];
+                if (sub.claimBenefitInfo && sub.claimBenefitInfo.messages) {
+                    structuredNotes["Benefit Messages"] = sub.claimBenefitInfo.messages;
                 }
             }
         }
-        for (const proc of procedures) notes.push(...toArray(proc.exclusions_and_limitations));
-        return uniqueStrings(notes).slice(0, 150);
+        structuredNotes["Procedure Limitations"] = {};
+        for (const proc of procedures) {
+            if (proc.exclusions_and_limitations && proc.exclusions_and_limitations.length > 0) {
+                structuredNotes["Procedure Limitations"][proc.procedure_code] = proc.exclusions_and_limitations;
+            }
+        }
+        return structuredNotes;
     }
 
     function buildCoveredServices(procedures) {
