@@ -45,19 +45,19 @@
     const PROCEDURE_SEARCH_URL = `${TARGET_ORIGIN}${PROCEDURE_SEARCH_PATH}?type=codes`;
 
     const CATEGORY_CODES = Object.freeze({
-        EXAMS: ["D0180", "D0120", "D0140", "D0150"],
-        DIAGNOSTIC: ["D0210", "D0220", "D0230", "D0240", "D0274", "D0330"],
-        PREVENTATIVE: ["D1510", "D1110", "D1120", "D1206", "D1351"],
-        "BASIC RESTORATIVE": ["D2140", "D2331", "D2620"],
-        "MAJOR RESTORATIVE": ["D2740", "D2950", "D2991"],
-        ENDODONTICS: ["D3347", "D3310", "D3330"],
-        PERIODONTICS: ["D4260", "D4341", "D4355", "D4381", "D4910"],
-        "REMOVABLE PROSTHO": ["D5860", "D5110", "D5740", "D5982"],
-        IMPLANT: ["D6194", "D6010", "D6056", "D6065"],
-        "FIXED PROSTHO": ["D6245"],
-        "ORAL SURGERY": ["D7259", "D7140", "D7240"],
-        ORTHODONTICS: ["D8010", "D8080", "D8090"],
-        ADJUNCTIVE: ["D9430", "D9110", "D9222", "D9239", "D9310", "D9944"]
+        exams: ["D0180", "D0120", "D0140", "D0150"],
+        diagnostic: ["D0210", "D0220", "D0230", "D0240", "D0274", "D0330"],
+        preventative: ["D1510", "D1110", "D1120", "D1206", "D1351"],
+        basicRestorative: ["D2140", "D2331", "D2620"],
+        majorRestorative: ["D2740", "D2950", "D2991"],
+        endodontics: ["D3347", "D3310", "D3330"],
+        periodontics: ["D4260", "D4341", "D4355", "D4381", "D4910"],
+        removableProstho: ["D5860", "D5110", "D5740", "D5982"],
+        implant: ["D6194", "D6010", "D6056", "D6065"],
+        fixedProstho: ["D6245"],
+        oralSurgery: ["D7259", "D7140", "D7240"],
+        orthodontics: ["D8010", "D8080", "D8090"],
+        adjunctive: ["D9430", "D9110", "D9222", "D9239", "D9310", "D9944"]
     });
 
     const PROCEDURE_LABELS = Object.freeze({
@@ -156,8 +156,8 @@
                         clearTimeout(wait.timer);
                         pending.delete(message.requestId);
                         wait.sendResponse({
-                            status: `[+] Done — ${message.data?.benefit_coverage?.procedure_count || 0} codes extracted. JSON downloaded.`,
-                            data_quality: message.data?.data_quality || "unknown"
+                            status: `[+] Done — Extraction finished. JSON downloaded.`,
+                            data_quality: message.data?.["Extraction Metadata"]?.["Data Quality"] || "unknown"
                         });
                     }
                 }).catch(error => {
@@ -467,7 +467,6 @@
 
             setStatus(state, "Normalizing member, plan, financial, and procedure details…", "working");
             const data = buildFinalOutput(state, rawByCode, run);
-            validateProcedureIntegrity(data.benefit_coverage.procedures);
 
             run.done = true;
             postPageMessage("RESULT", { requestId, data });
@@ -569,6 +568,7 @@
             rawByCode.get(code),
             procedureErrors.get(code)
         ));
+        validateProcedureIntegrity(procedures);
         const procMap = Object.fromEntries(procedures.map(item => [item.procedure_code, item]));
 
         const supportCorpus = [memberRoot, ...state.supportingApiResponses.map(item => item.response)];
@@ -616,12 +616,12 @@
             || domValue(dom, ["Starting Month of Plan Year", "Plan Year Start"]);
 
         const deductiblePreventive = deriveDeductibleApplicability(
-            procedures.filter(item => ["PREVENTATIVE"].includes(item.category)),
+            procedures.filter(item => ["preventative"].includes(item.category)),
             leaves,
             "prevent"
         );
         const deductibleDiagnostic = deriveDeductibleApplicability(
-            procedures.filter(item => ["EXAMS", "DIAGNOSTIC"].includes(item.category)),
+            procedures.filter(item => ["exams", "diagnostic"].includes(item.category)),
             leaves,
             "diagnostic"
         );
@@ -700,124 +700,56 @@
         ]);
 
         const output = {
-            source: "Delta Dental Office Toolkit",
-            portal: location.hostname,
-            captured_at: new Date().toISOString(),
-            data_quality: state.memberSearchResponse ? "full_api" : "procedure_api_with_page_fallback",
-            crawl_statistics: {
-                requested_codes: PROCEDURE_CODES.length,
-                successful_codes: procedures.filter(item => !item.error).length,
-                failed_codes: procedures.filter(item => item.error).map(item => item.procedure_code),
-                supporting_api_responses: state.supportingApiResponses.length,
-                duration_ms: Date.now() - run.startedAt
+            "Patient/Subscriber Information": {
+                "Patient Name": patientName,
+                "Date of Birth of the Patient": valueOrNA(patientDob),
+                "Member ID": valueOrNA(memberId),
+                "Relation to Subscriber": relationship,
+                "Subscriber Name": subscriberName,
+                "Date of Birth of the subscriber": valueOrNA(subscriber.dateOfBirth),
+                "SSN": valueOrNA(ssn)
             },
-            summary: {
-                insurer: "Delta Dental",
-                group_name: groupName,
-                group_number: groupNumber,
-                plan_name: planName,
-                payor_id: valueOrNA(claimInfo.payorId)
+            "Insurance Information": {
+                "Insurance Name": "Delta Dental",
+                "Group Name": valueOrNA(groupName),
+                "Group Number": valueOrNA(groupNumber),
+                "Fee Schedule": valueOrNA(feeSchedule),
+                "Insurance Address": valueOrNA(insuranceAddress),
+                "Insurance Phone": valueOrNA(insurancePhone),
+                "Provider Network Status": valueOrNA(providerNetworkStatus),
+                "Patient Eff Date": valueOrNA(patientEffective),
+                "Patient Term Date": valueOrNA(patientTermDate),
+                "Starting Month of Plan Year": valueOrNA(planYearStart),
+                "Payor ID": valueOrNA(claimInfo.payorId)
             },
-            patient: {
-                name: patientName,
-                dob: valueOrNA(patientDob),
-                member_id: valueOrNA(memberId),
-                relationship,
-                eligibility_status: valueOrNA(patientStatus),
-                effective_date: valueOrNA(patientEffective),
-                termination_date: valueOrNA(patientTermDate)
+            "Eligibility Notes": eligibilityNotes.length ? eligibilityNotes : ["N/A"],
+            "Coverage and Maximums": {
+                "Yearly Maximum": annualMax.total,
+                "Remaining": annualMax.remaining,
+                "Individual Deductible Paid to Date": indDed.used,
+                "Individual Deductible Remaining": indDed.remaining,
+                "Family Deductible Paid to Date": famDed.used,
+                "Family Deductible Remaining": famDed.remaining,
+                "Deductible Applies to Preventive": provisions.deductible_applies_to_preventive,
+                "Deductible Applies to Diagnostic": provisions.deductible_applies_to_diagnostic,
+                "Is there a Waiting Period": provisions.waiting_period !== "N/A" && provisions.waiting_period !== "No" ? "Yes" : provisions.waiting_period,
+                "Waiting Period": provisions.waiting_period,
+                "Applies to": provisions.waiting_period_applies_to,
+                "Are Major Services Paid on Prep": provisions.major_services_paid_on_prep_or_seat,
+                "Or Seat": provisions.major_services_paid_on_prep_or_seat === "Seat" ? "Yes" : "N/A",
+                "Does Missing Tooth Clause Apply?": provisions.missing_tooth_clause,
+                "Dependent Age Limit": provisions.dependent_age_limit,
+                "Orthodontic Deductible": orthoDed.total,
+                "Orthodontic Deductible Paid to Date": orthoDed.used,
+                "Orthodontic Maximum": orthoMax.total,
+                "Orthodontic Maximum Paid to Date": orthoMax.used
             },
-            subscriber: {
-                name: subscriberName,
-                dob: valueOrNA(subscriber.dateOfBirth),
-                member_id: valueOrNA(memberId),
-                ssn: valueOrNA(ssn)
-            },
-            plan_details: {
-                insurance_name: "Delta Dental",
-                group_name: groupName,
-                group_number: groupNumber,
-                plan_name: planName,
-                plan_code: firstMeaningful([benefitInfo.plan, clientInfo.adminPlan, clientInfo.planAbbrev]),
-                product_name: firstMeaningful([benefitInfo.productName, clientInfo.productName]),
-                fee_schedule: valueOrNA(feeSchedule),
-                insurance_address: valueOrNA(insuranceAddress),
-                insurance_phone: valueOrNA(insurancePhone),
-                provider_network_status: valueOrNA(providerNetworkStatus),
-                patient_effective_date: valueOrNA(patientEffective),
-                patient_termination_date: valueOrNA(patientTermDate),
-                starting_month_of_plan_year: valueOrNA(planYearStart),
-                payor_id: valueOrNA(claimInfo.payorId),
-                client_id: firstMeaningful([benefitInfo.clientId, clientInfo.clientSpecifiedId]),
-                sub_client_id: firstMeaningful([benefitInfo.subClientId, clientInfo.subClientSpecifiedId]),
-                network: valueOrNA(preferredNetwork)
-            },
-            eligibility_notes: eligibilityNotes.length ? eligibilityNotes : ["N/A"],
-            financials: {
-                annual_max: annualMax,
-                deductible_ind: indDed,
-                deductible_fam: famDed,
-                ortho_deductible: orthoDed,
-                ortho_lifetime: orthoMax
-            },
-            provisions,
-            covered_services: buildCoveredServices(procedures),
-            benefit_coverage: {
-                source: "Delta Toolkit Procedure Benefits API",
-                procedure_count: procedures.length,
-                procedures
-            },
-            toolkit: {
-                patient_subscriber_information: {
-                    patient_name: patientName,
-                    patient_dob: valueOrNA(patientDob),
-                    member_id: valueOrNA(memberId),
-                    relation_to_subscriber: relationship,
-                    subscriber_name: subscriberName,
-                    subscriber_dob: valueOrNA(subscriber.dateOfBirth),
-                    ssn: valueOrNA(ssn)
-                },
-                insurance_information: {
-                    insurance_name: "Delta Dental",
-                    group_name: groupName,
-                    group_number: groupNumber,
-                    fee_schedule: valueOrNA(feeSchedule),
-                    insurance_address: valueOrNA(insuranceAddress),
-                    insurance_phone: valueOrNA(insurancePhone),
-                    provider_network_status: valueOrNA(providerNetworkStatus),
-                    patient_effective_date: valueOrNA(patientEffective),
-                    patient_termination_date: valueOrNA(patientTermDate),
-                    starting_month_of_plan_year: valueOrNA(planYearStart),
-                    payor_id: valueOrNA(claimInfo.payorId)
-                },
-                coverage_and_maximums: {
-                    yearly_maximum: annualMax.total,
-                    yearly_remaining: annualMax.remaining,
-                    individual_deductible_total: indDed.total,
-                    individual_deductible_paid_to_date: indDed.used,
-                    individual_deductible_remaining: indDed.remaining,
-                    family_deductible_total: famDed.total,
-                    family_deductible_paid_to_date: famDed.used,
-                    family_deductible_remaining: famDed.remaining,
-                    orthodontic_deductible: orthoDed.total,
-                    orthodontic_deductible_paid_to_date: orthoDed.used,
-                    orthodontic_maximum: orthoMax.total,
-                    orthodontic_maximum_paid_to_date: orthoMax.used
-                },
-                requested_field_map: buildRequestedFieldMap(procMap, provisions),
-                captured_endpoints: uniqueStrings([
-                    MEMBER_SEARCH_PATH,
-                    PROCEDURE_SEARCH_PATH,
-                    ...state.supportingApiResponses.map(item => item.endpoint)
-                ]),
-                raw_supporting_responses: state.supportingApiResponses.map(item => sanitizeForOutput(item)),
-                missing_fields: listMissingRequestedFields({
-                    patientName, patientDob, memberId, relationship, subscriberName,
-                    subscriberDob: subscriber.dateOfBirth, ssn, groupName, groupNumber,
-                    feeSchedule, insuranceAddress, insurancePhone, providerNetworkStatus,
-                    patientEffective, patientTermDate, planYearStart, payorId: claimInfo.payorId,
-                    annualMax, indDed, famDed, orthoDed, orthoMax
-                })
+            "General Benefit Categories": buildRequestedFieldMap(procMap, provisions),
+            "Extraction Metadata": {
+                "Source": "Delta Dental Office Toolkit",
+                "Portal": location.hostname,
+                "Captured At": new Date().toISOString(),
+                "Data Quality": state.memberSearchResponse ? "full_api" : "procedure_api_with_page_fallback"
             }
         };
 
@@ -938,15 +870,15 @@
             }
         }
 
-        map.EXAMS["Do D0120,D0150 Share a frequency with D0140?"] = provisions.d0120_d0150_share_frequency_with_d0140;
-        map.PREVENTATIVE["Permanent Un-restored Molars only?"] = provisions.permanent_unrestored_molars_only;
-        map["BASIC RESTORATIVE"]["Posterior composites downgraded to amalgam?"] = provisions.posterior_composites_downgraded_to_amalgam;
-        map["MAJOR RESTORATIVE"]["Porcelain crowns downgraded on posterior teeth"] = provisions.porcelain_crowns_downgraded_on_posterior_teeth;
-        map["MAJOR RESTORATIVE"]["Can D2950 be done same day as crown?"] = provisions.d2950_same_day_as_crown;
-        map.PERIODONTICS["Number of quads for the code D4341"] = provisions.d4341_number_of_quads;
-        map.PERIODONTICS["Do D4910 and D1110 share a frequency?"] = provisions.d4910_d1110_share_frequency;
-        map.ORTHODONTICS["Payment Frequency"] = provisions.ortho_payment_frequency;
-        map.ORTHODONTICS["Ortho Age Limit"] = provisions.ortho_age_limit;
+        map.exams["Do D0120, D0150 Share a frequency with D0140?"] = provisions.d0120_d0150_share_frequency_with_d0140;
+        map.preventative["Permanent Un-restored Molars only?"] = provisions.permanent_unrestored_molars_only;
+        map.basicRestorative["Posterior composites downgraded to amalgam?"] = provisions.posterior_composites_downgraded_to_amalgam;
+        map.majorRestorative["Porcelain crowns downgraded on posterior teeth"] = provisions.porcelain_crowns_downgraded_on_posterior_teeth;
+        map.majorRestorative["Can D2950 be done same day as crown?"] = provisions.d2950_same_day_as_crown;
+        map.periodontics["Number of quads for code D4341"] = provisions.d4341_number_of_quads;
+        map.periodontics["Do D4910 and D1110 share a frequency?"] = provisions.d4910_d1110_share_frequency;
+        map.orthodontics["Payment Frequency"] = provisions.ortho_payment_frequency;
+        map.orthodontics["Ortho Age Limit"] = provisions.ortho_age_limit;
         return map;
     }
 

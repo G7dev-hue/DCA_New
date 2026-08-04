@@ -704,14 +704,11 @@
           ]).join(" ") || MISSING
         },
 
-        "Coverage & Maximums": {
+        "Coverage and Maximums": {
           "Yearly Maximum": annualMaximum ? money(annualMaximum.benefitAmount) : MISSING,
-          "Yearly Maximum Paid to Date": annualMaximum ? money(annualMaximum.benefitApplied) : MISSING,
           "Remaining": annualMaximum ? subtractMoney(annualMaximum.benefitAmount, annualMaximum.benefitApplied) : MISSING,
-          "Individual Deductible": individualDeductible ? money(individualDeductible.benefitAmount) : MISSING,
           "Individual Deductible Paid to Date": individualDeductible ? money(individualDeductible.benefitApplied) : MISSING,
           "Individual Deductible Remaining": individualDeductible ? subtractMoney(individualDeductible.benefitAmount, individualDeductible.benefitApplied) : MISSING,
-          "Family Deductible": familyDeductible ? money(familyDeductible.benefitAmount) : MISSING,
           "Family Deductible Paid to Date": familyDeductible ? money(familyDeductible.benefitApplied) : MISSING,
           "Family Deductible Remaining": familyDeductible ? subtractMoney(familyDeductible.benefitAmount, familyDeductible.benefitApplied) : MISSING,
           "Deductible Applies to Preventive": hasDeductibleForClasses(items, [
@@ -726,10 +723,10 @@
             /xray/i
           ]),
           "Is there a Waiting Period": waiting["Is there a Waiting Period"],
-          "Waiting Period": waiting.Period,
-          "Waiting Period Applies to": waiting["Applies to"],
-          "Late Entrant Waiting Period Applies To": waiting["Late Entrant Waiting Period Applies To"],
-          "Are Major Services Paid on Prep Or Seat": majorPrepOrSeat(items),
+          "Period": waiting.Period,
+          "Applies to": waiting["Applies to"],
+          "Are Major Services Paid on Prep": majorPrepOrSeat(items),
+          "Or Seat": majorPrepOrSeat(items),
           "Does Missing Tooth Clause Apply?": missingToothClause(planInfo),
           "Dependent Age Limit": getDomFallbackValue(domFallback, "dependentAgeLimit"),
           "Orthodontic Deductible": orthoDeductible
@@ -739,8 +736,7 @@
             ? money(orthoDeductible.benefitApplied)
             : allOrthoDeductibleNotApplicable ? NOT_APPLICABLE : MISSING,
           "Orthodontic Maximum": orthoMaximum ? money(orthoMaximum.benefitAmount) : MISSING,
-          "Orthodontic Maximum Paid to Date": orthoMaximum ? money(orthoMaximum.benefitApplied) : MISSING,
-          "Orthodontic Maximum Remaining": orthoMaximum ? subtractMoney(orthoMaximum.benefitAmount, orthoMaximum.benefitApplied) : MISSING
+          "Orthodontic Maximum Paid to Date": orthoMaximum ? money(orthoMaximum.benefitApplied) : MISSING
         },
 
         "General Benefit Categories": {},
