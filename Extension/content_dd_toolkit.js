@@ -407,19 +407,19 @@
         if (!state.procedureTemplate || !state.procedureHeaders?.authorization) {
             console.info("Delta Toolkit: Attempting automated initial procedure lookup to capture authorization...");
             
-            const inputs = Array.from(document.querySelectorAll('input:not([type="hidden"])')).filter(i => i.offsetParent !== null);
+            const inputs = Array.from(document.querySelectorAll('input:not([type="hidden"])'));
             let input = inputs.find(i => /procedure|code|search/i.test(i.outerHTML || ""));
             if (!input && inputs.length > 0) input = inputs[inputs.length - 1];
 
-            const buttons = Array.from(document.querySelectorAll('button, input[type="button"], input[type="submit"], a, div'));
-            const searchBtn = buttons.find(b => /(search|submit|lookup|find)/i.test(b.textContent || b.value || "") && b.offsetParent !== null && !b.disabled && b.tagName !== "DIV" && b.tagName !== "A");
+            const buttons = Array.from(document.querySelectorAll('button, input[type="button"], input[type="submit"], a[class*="btn"], div[class*="btn"]'));
+            const searchBtn = buttons.find(b => /(search|submit|lookup|find|add|check)/i.test(b.textContent || b.value || b.outerHTML || "") && !b.disabled);
             
             let failureReason = "Unknown";
             
-            if (!input) failureReason = "Could not find any input field for procedure code on the page.";
-            else if (!searchBtn) failureReason = "Could not find a Search/Submit button on the page.";
-            else {
-                console.info("Delta Toolkit: Found input and button, dispatching simulated search...");
+            if (!input) {
+                failureReason = "Could not find any input field for procedure code on the page.";
+            } else {
+                console.info("Delta Toolkit: Found input, dispatching simulated search...");
                 const nativeInputValueSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
                 if (nativeInputValueSetter) {
                     nativeInputValueSetter.call(input, "D0120");
@@ -431,7 +431,15 @@
                 input.dispatchEvent(new Event("change", { bubbles: true }));
                 
                 await sleep(200);
-                searchBtn.click();
+                
+                if (searchBtn) {
+                    searchBtn.click();
+                } else {
+                    console.info("Delta Toolkit: No search button found, pressing Enter on the input instead.");
+                    input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", code: "Enter", keyCode: 13, which: 13, bubbles: true }));
+                    input.dispatchEvent(new KeyboardEvent("keypress", { key: "Enter", code: "Enter", keyCode: 13, which: 13, bubbles: true }));
+                    input.dispatchEvent(new KeyboardEvent("keyup", { key: "Enter", code: "Enter", keyCode: 13, which: 13, bubbles: true }));
+                }
                 
                 for (let i = 0; i < 25; i++) {
                     await sleep(300);
@@ -439,7 +447,7 @@
                 }
                 
                 if (!state.procedureTemplate || !state.procedureHeaders?.authorization) {
-                    failureReason = "Simulated search button was clicked, but no API request was intercepted within 7 seconds.";
+                    failureReason = "Simulated search (or Enter key) was triggered, but no API request was intercepted within 7 seconds.";
                 }
             }
 
