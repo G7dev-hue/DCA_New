@@ -28,7 +28,9 @@
         "https://www.deltadentalnj.com/*",
         "https://www.deltadentalwa.com/*",
         "https://providers.dentaquest.com/*",
-	    "https://app.deltadentalil.com/*"
+	    "https://app.deltadentalil.com/*",
+        "https://www.dentalofficetoolkit.com/dot-ui/member-benefits/*",
+        "https://providers.dentaquest.com/member-details/*"
     ],
     "action": {
         "default_popup": "popup.html"
@@ -92,6 +94,30 @@
             "matches":["https://www.unitedconcordia.com/*"],
             "js":["content_ucci.js"],
             "all_frames":true
-        }
+        },
+        {
+            "matches":["https://providers.dentaquest.com/*"],
+            "js":["content_dentaquest.js"],
+            "all_frames":true,
+            "run_at": "document_start"
+        },
+        {
+        "matches": [
+            "https://www.dentalofficetoolkit.com/*"
+        ],
+        "js": ["content_dd_toolkit.js"],
+        "run_at": "document_start",
+        "world": "MAIN"
+        },
+        {
+        "matches": [
+            "https://www.dentalofficetoolkit.com/*"
+        ],
+        "js": [
+            "content_dd_toolkit.js"
+        ],
+        "run_at": "document_start",
+        "world": "ISOLATED"
+        }        
     ]
 }
