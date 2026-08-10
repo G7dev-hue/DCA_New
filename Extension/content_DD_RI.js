@@ -140,54 +140,86 @@ function collectFinancials() {
         maximums: [],
         deductibles: []
     };
+
+    // DDRI renders deductible rows in the same main table as maximums and may
+    // repeat a simplified deductible total in the OON table. The main table is
+    // authoritative because it contains total + used + remaining.
     const maximumKeys = new Set();
-    const deductibleKeys = new Set();
+    const deductibleByCategory = new Map();
+
+    const categoryKey = value => clean(value).replace(/:\s*$/, '').toLowerCase();
+    const isDeductible = value => /\bdeductible\b/i.test(clean(value));
+    const isMissing = value => !value || value === "N/A";
+
+    const keepMoreCompleteDeductible = (entry) => {
+        const key = categoryKey(entry.category);
+        if (!key) return;
+
+        const existing = deductibleByCategory.get(key);
+        if (!existing) {
+            deductibleByCategory.set(key, entry);
+            return;
+        }
+
+        // Never replace a real main-table value with the OON fallback's N/A.
+        for (const field of ["total", "used", "remaining"]) {
+            if (isMissing(existing[field]) && !isMissing(entry[field])) {
+                existing[field] = entry[field];
+            }
+        }
+    };
 
     const maxRows = document.querySelectorAll('tr.DataTableRow, tr.DataTableOddRow');
 
     for (const row of maxRows) {
         const catCell = row.querySelector('.MaximumsFreqCategory');
-        if (catCell && row.querySelector('.MaximumsAmount')) {
-            const category = clean(catCell.textContent);
-            const total = clean(row.querySelector('.MaximumsAmount')?.textContent);
-            const used = clean(row.querySelector('.MaximumsAmountUsed')?.textContent);
-            const remaining = clean(row.querySelector('.MaximumsAmountAvailable')?.textContent);
-            
-            if (category) {
-                const entry = { category, total: total || "N/A", used: used || "N/A", remaining: remaining || "N/A" };
-                const key = [entry.category, entry.total, entry.used, entry.remaining]
-                    .map(value => clean(value).toLowerCase())
-                    .join('\u0000');
-                if (!maximumKeys.has(key)) {
-                    maximumKeys.add(key);
-                    financials.maximums.push(entry);
-                }
-            }
+        if (!catCell || !row.querySelector('.MaximumsAmount')) continue;
+
+        const category = clean(catCell.textContent).replace(/:\s*$/, '');
+        if (!category) continue;
+
+        const entry = {
+            category,
+            total: clean(row.querySelector('.MaximumsAmount')?.textContent) || "N/A",
+            used: clean(row.querySelector('.MaximumsAmountUsed')?.textContent) || "N/A",
+            remaining: clean(row.querySelector('.MaximumsAmountAvailable')?.textContent) || "N/A"
+        };
+
+        if (isDeductible(category)) {
+            keepMoreCompleteDeductible(entry);
+            continue;
+        }
+
+        const key = [entry.category, entry.total, entry.used, entry.remaining]
+            .map(value => clean(value).toLowerCase())
+            .join('\u0000');
+        if (!maximumKeys.has(key)) {
+            maximumKeys.add(key);
+            financials.maximums.push(entry);
         }
     }
 
+    // OON deductible values are fallback-only. If the main table already gave
+    // us Individual/Family deductible values, do not create a duplicate row.
     const oonTables = document.querySelectorAll('.OONTbl table');
     for (const table of oonTables) {
-        const rows = table.querySelectorAll('tr');
-        for (const row of rows) {
+        for (const row of table.querySelectorAll('tr')) {
             const cells = row.querySelectorAll('td');
-            if (cells.length >= 2) {
-                const category = clean(cells[0].textContent).replace(/:\s*$/, '');
-                const amount = clean(cells[1].textContent);
-                if (category) {
-                    const entry = { category, total: amount || "N/A", used: "N/A", remaining: "N/A" };
-                    const key = [entry.category, entry.total, entry.used, entry.remaining]
-                        .map(value => clean(value).toLowerCase())
-                        .join('\u0000');
-                    if (!deductibleKeys.has(key)) {
-                        deductibleKeys.add(key);
-                        financials.deductibles.push(entry);
-                    }
-                }
-            }
+            if (cells.length < 2) continue;
+
+            const category = clean(cells[0].textContent).replace(/:\s*$/, '');
+            if (!category || !isDeductible(category)) continue;
+
+            keepMoreCompleteDeductible({
+                category,
+                total: clean(cells[1].textContent) || "N/A",
+                used: "N/A",
+                remaining: "N/A"
+            });
         }
     }
 
+    financials.deductibles = Array.from(deductibleByCategory.values());
     return financials;
 }
 
@@ -384,9 +416,16 @@ async function collectProcedures(requestedCodes = null) {
         const batch = codes.slice(i, i + BATCH_SIZE);
         const batchNum = Math.floor(i / BATCH_SIZE) + 1;
         const totalBatches = Math.ceil(codes.length / BATCH_SIZE);
-        const pct = Math.round((i/codes.length)*100);
+        // Procedure crawling occupies the long middle section of the overall crawl.
+        const pct = 40 + Math.round((i / codes.length) * 50);
+        const codeRange = batch.length === 1 ? batch[0] : `${batch[0]} - ${batch[batch.length - 1]}`;
         
-        broadcastState("FETCHING PROCEDURES", "Fetching Procedures", `Batch ${batchNum} of ${totalBatches}`, pct);
+        broadcastState(
+            "FETCHING PROCEDURES",
+            "Fetching Procedure Benefits",
+            `Batch ${batchNum} of ${totalBatches} • ${codeRange} • ${batch.length} code${batch.length === 1 ? "" : "s"}`,
+            pct
+        );
         
         const batchPromises = batch.map(async (code) => {
             const data = await fetchProcedure(code, params);
@@ -409,6 +448,15 @@ async function collectProcedures(requestedCodes = null) {
 
         const batchResults = await Promise.all(batchPromises);
         batchResults.forEach(r => { if (r) results.push(r); });
+
+        const completed = Math.min(i + batch.length, codes.length);
+        const completedPct = 40 + Math.round((completed / codes.length) * 50);
+        broadcastState(
+            "FETCHING PROCEDURES",
+            "Procedure Benefits In Progress",
+            `${completed} of ${codes.length} procedure codes checked`,
+            completedPct
+        );
         
         if (i + BATCH_SIZE < codes.length) {
             await sleep(150);
@@ -513,7 +561,7 @@ async function startCrawl() {
     try {
         await clearPreviousSession(true);
         logState("STARTING");
-        broadcastState("STARTING", "Initializing...");
+        broadcastState("STARTING", "Initializing RI Crawl", "Preparing scraper...", 2);
         
         const auditData = {};
         
@@ -530,13 +578,15 @@ async function startCrawl() {
         auditData.financials = collectFinancials();
         
         logState("COLLECTING BENEFIT CATEGORIES");
+        broadcastState("COLLECTING BENEFIT CATEGORIES", "Collecting Benefit Categories", "Reading plan benefit table...", 35);
         auditData.benefit_categories = collectBenefitCategories();
         
         logState("FETCHING PROCEDURES");
+        broadcastState("FETCHING PROCEDURES", "Starting Procedure Checks", `${PROCEDURE_CODES.length} procedure codes queued`, 40);
         auditData.benefit_coverage = { procedures: await collectProcedures() };
         
         logState("GENERATING JSON");
-        broadcastState("GENERATING JSON", "Preparing Audit", "Generating JSON...");
+        broadcastState("GENERATING JSON", "Preparing Audit JSON", "Combining patient, plan, financial and procedure data...", 92);
         const finalJson = generateJSON(auditData);
         const patientNotes = generatePatientNotesJSON(auditData);
         
@@ -546,7 +596,7 @@ async function startCrawl() {
         }, resolve));
         
         logState("INITIATING DOWNLOAD");
-        broadcastState("DOWNLOADING", "Downloading Audit JSON...");
+        broadcastState("DOWNLOADING", "Downloading Audit JSON", "The RI crawl is complete; saving the file...", 97);
         await downloadJSON(finalJson);
         
         logState("CLEANUP");
@@ -554,7 +604,7 @@ async function startCrawl() {
         resetCacheTimeout();
         
         logState("COMPLETE");
-        broadcastState("COMPLETE", "Download Complete", "Audit Saved Successfully");
+        broadcastState("COMPLETE", "RI Crawl Complete", "Audit JSON saved successfully.", 100);
         
     } catch (err) {
         logState("FAILED");

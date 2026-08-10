@@ -4,11 +4,359 @@ console.log("[Aetna] content script loaded on: " + window.location.href);
 const clean = (s) => (s || "").trim().replace(/\s+/g, ' ');
 
 // ══════════════════════════════════════════════════════════════════════════
+// CLAIMCONNECT CRAWL FLOW — manual member selection -> procedure search -> results
+// Existing extraction/output behavior below is intentionally kept intact.
+// ══════════════════════════════════════════════════════════════════════════
+
+const PROCEDURE_CODES = [
+    "D0180", "D0120", "D0140", "D0150", "D0210", "D0220", "D0230", "D0240", "D0274", "D0330",
+    "D1510", "D1110", "D1120", "D1206", "D1351", "D2140", "D2331", "D2620", "D2740", "D2950",
+    "D2991", "D3347", "D3310", "D3330", "D4260", "D4341", "D4355", "D4381", "D4910", "D5860",
+    "D5110", "D5740", "D5982", "D6194", "D6010", "D6056", "D6065", "D6245", "D7259", "D7140",
+    "D7240", "D8010", "D8080", "D8090", "D9430", "D9110", "D9222", "D9239", "D9310", "D9944"
+];
+
+const CLAIMCONNECT_CRAWL_KEY = "__claimconnect_aetna_crawl_state_v1";
+
+function _getCrawlState() {
+    try {
+        return JSON.parse(sessionStorage.getItem(CLAIMCONNECT_CRAWL_KEY) || "{}") || {};
+    } catch (e) {
+        console.warn("[Aetna] Could not read crawl state", e);
+        return {};
+    }
+}
+
+function _saveCrawlState(state) {
+    sessionStorage.setItem(CLAIMCONNECT_CRAWL_KEY, JSON.stringify(state || {}));
+}
+
+function _clearCrawlState() {
+    sessionStorage.removeItem(CLAIMCONNECT_CRAWL_KEY);
+}
+
+function _waitFor(selector, timeoutMs) {
+    timeoutMs = timeoutMs || 15000;
+    return new Promise(function(resolve, reject) {
+        var existing = document.querySelector(selector);
+        if (existing) return resolve(existing);
+
+        var done = false;
+        var observer = new MutationObserver(function() {
+            var el = document.querySelector(selector);
+            if (el && !done) {
+                done = true;
+                observer.disconnect();
+                clearTimeout(timer);
+                resolve(el);
+            }
+        });
+
+        observer.observe(document.documentElement, { childList: true, subtree: true });
+        var timer = setTimeout(function() {
+            if (done) return;
+            done = true;
+            observer.disconnect();
+            reject(new Error("Timed out waiting for " + selector));
+        }, timeoutMs);
+    });
+}
+
+function _legendByText(text) {
+    var legends = document.querySelectorAll("legend");
+    for (var i = 0; i < legends.length; i++) {
+        if (clean(legends[i].textContent).toLowerCase() === text.toLowerCase()) return legends[i];
+    }
+    return null;
+}
+
+function _tableBelowLegend(text) {
+    var legend = _legendByText(text);
+    if (!legend) return null;
+    var container = legend.parentElement;
+    return container ? container.querySelector("table") : null;
+}
+
+function _keyFromLabel(label) {
+    return clean(label).replace(/:$/, "").toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "");
+}
+
+function _extractLabeledTable(legendText) {
+    var table = _tableBelowLegend(legendText);
+    var result = {};
+    if (!table) return result;
+
+    var rows = table.querySelectorAll("tr");
+    rows.forEach(function(row) {
+        var cells = Array.from(row.querySelectorAll(":scope > td"));
+        for (var i = 0; i < cells.length; i++) {
+            var bolds = cells[i].querySelectorAll("b");
+            if (!bolds.length) continue;
+
+            bolds.forEach(function(bold) {
+                var label = clean(bold.textContent);
+                if (!label) return;
+                var value = "";
+
+                // Standard ClaimConnect layout: label is in one cell and its
+                // value is in the immediately following cell.
+                if (bolds.length === 1 && clean(cells[i].textContent) === label && cells[i + 1]) {
+                    value = clean(cells[i + 1].textContent);
+                } else {
+                    // Coverage Details nests Plan Number / Network Type as
+                    // adjacent divs inside the same table cell.
+                    var labelContainer = bold.parentElement;
+                    if (labelContainer && labelContainer.nextElementSibling) {
+                        value = clean(labelContainer.nextElementSibling.textContent);
+                    }
+                }
+
+                if (value) result[_keyFromLabel(label)] = value;
+            });
+        }
+    });
+
+    return result;
+}
+
+function _extractStartPage() {
+    var subscriber = {};
+    var members = [];
+
+    var summaryTables = document.querySelectorAll("table");
+    summaryTables.forEach(function(table) {
+        var text = clean(table.textContent);
+        if (!text.includes("Employee Name:") || !text.includes("Subscriber Member ID or SSN:")) return;
+        var cells = table.querySelectorAll("td");
+        cells.forEach(function(cell) {
+            var cellText = clean(cell.textContent);
+            if (cellText.startsWith("Employee Name:")) {
+                subscriber.name = clean(cellText.replace(/^Employee Name:\s*/i, ""));
+            }
+            if (cellText.startsWith("Subscriber Member ID or SSN:")) {
+                subscriber.member_id_or_ssn = clean(cellText.replace(/^Subscriber Member ID or SSN:\s*/i, ""));
+            }
+        });
+    });
+
+    var memberTable = null;
+    document.querySelectorAll("table").forEach(function(table) {
+        var header = clean((table.querySelector("thead") || {}).textContent || "");
+        if (header.includes("Name") && header.includes("Relationship") && header.includes("Group/Policy")) {
+            memberTable = table;
+        }
+    });
+
+    if (memberTable) {
+        memberTable.querySelectorAll("tbody tr").forEach(function(row) {
+            var cells = row.querySelectorAll(":scope > td");
+            if (cells.length < 5) return;
+            var link = cells[0].querySelector("a");
+            members.push({
+                name: clean(cells[0].textContent),
+                relationship: clean(cells[1].textContent),
+                date_of_birth: clean(cells[2].textContent),
+                group_policy_number: clean(cells[3].textContent),
+                status: clean(cells[4].textContent),
+                _link: link || null
+            });
+        });
+    }
+
+    return { subscriber: subscriber, members: members };
+}
+
+function _attachManualMemberSelection(members) {
+    var selectable = members.filter(function(member) { return !!member._link; });
+    if (!selectable.length) throw new Error("No selectable patient was found");
+
+    selectable.forEach(function(member) {
+        if (member._link.dataset.claimConnectCrawlerBound === "1") return;
+        member._link.dataset.claimConnectCrawlerBound = "1";
+
+        // The operator chooses the member. Capture that exact row before
+        // ClaimConnect's existing Wicket click handler navigates away.
+        member._link.addEventListener("click", function() {
+            var state = _getCrawlState();
+            state.running = true;
+            state.stage = "selected_patient";
+            state.selected_member = _publicMember(member);
+            state.target_patient_name = member.name;
+            state.selected_at = new Date().toISOString();
+            _saveCrawlState(state);
+        }, true);
+    });
+}
+
+function _publicMember(member) {
+    if (!member) return null;
+    return {
+        name: member.name,
+        relationship: member.relationship,
+        date_of_birth: member.date_of_birth,
+        group_policy_number: member.group_policy_number,
+        status: member.status
+    };
+}
+
+function _isEligibilityResultsPage() {
+    var text = document.body ? document.body.innerText : "";
+    return text.includes("Click on a patient's name to view detailed information") &&
+           text.includes("Relationship") && text.includes("Group/Policy #");
+}
+
+function _isPatientDetailsPage() {
+    return !!_legendByText("Patient Information") && !!_legendByText("Benefits Search");
+}
+
+function _capturePatientDetails() {
+    return {
+        patient_information: _extractLabeledTable("Patient Information"),
+        provider_details: _extractLabeledTable("Provider Details"),
+        coverage_details: _extractLabeledTable("Coverage Details")
+    };
+}
+
+function _setNativeValue(input, value) {
+    var descriptor = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value");
+    if (descriptor && descriptor.set) descriptor.set.call(input, value);
+    else input.value = value;
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+}
+
+function _sleep(ms) {
+    return new Promise(function(resolve) { setTimeout(resolve, ms); });
+}
+
+async function _activateProcedureInput(input) {
+    // Match the working manual action: after the CSV is inserted, focus and
+    // click the populated entry box once. This fires ClaimConnect's own
+    // Wicket onclick handler without changing the entered procedure codes.
+    try {
+        input.scrollIntoView({ block: "center", inline: "nearest" });
+    } catch (e) {
+        // Older browsers may not support the options object.
+        input.scrollIntoView();
+    }
+
+    input.focus();
+    if (typeof input.setSelectionRange === "function") {
+        var end = input.value.length;
+        input.setSelectionRange(end, end);
+    }
+
+    input.click();
+
+    // Give the Wicket click callback time to finish before submitting the
+    // benefits form, just as a user naturally pauses between the two clicks.
+    await _sleep(800);
+}
+
+async function _submitProcedureCodeSearch() {
+    var radio = document.querySelector('input[name="selectContainer:searchOptionRadioGroup"][value="radio14"]');
+    if (!radio) {
+        var labels = Array.from(document.querySelectorAll("label"));
+        var label = labels.find(function(el) { return clean(el.textContent) === "Procedure Code"; });
+        if (label && label.htmlFor) radio = document.getElementById(label.htmlFor);
+    }
+    if (!radio) throw new Error("Procedure Code radio button was not found");
+
+    if (!radio.checked) radio.click();
+
+    var input = await _waitFor('input[name="selectContainer:procedureSelect:procedureCode"]', 15000);
+    _setNativeValue(input, PROCEDURE_CODES.join(", "));
+    await _activateProcedureInput(input);
+
+    var form = input.closest("form");
+    var viewButton = form ? Array.from(form.querySelectorAll("a,button,input[type=submit]")).find(function(el) {
+        return clean(el.textContent || el.value) === "View Benefits";
+    }) : null;
+
+    if (!viewButton) throw new Error("View Benefits button was not found");
+
+    var state = _getCrawlState();
+    state.requested_procedure_codes = PROCEDURE_CODES.slice();
+    state.stage = "submitted_procedure_codes";
+    _saveCrawlState(state);
+
+    viewButton.click();
+}
+
+async function continueAetnaCrawl() {
+    if (window.__aetnaCrawlBusy) return;
+    window.__aetnaCrawlBusy = true;
+
+    try {
+        if (_isEligibilityResultsPage()) {
+            var start = _extractStartPage();
+            var existingState = _getCrawlState();
+            var state = {
+                running: true,
+                stage: "awaiting_manual_patient_selection",
+                started_at: existingState.started_at || new Date().toISOString(),
+                subscriber: start.subscriber,
+                eligibility_members: start.members.map(_publicMember),
+                selected_member: null,
+                target_patient_name: null
+            };
+            _saveCrawlState(state);
+            _attachManualMemberSelection(start.members);
+
+            // Show a native browser message at the manual patient-selection step.
+            // The operator closes the message and then clicks the required patient.
+            window.alert("Select the patient you want to crawl.");
+
+            console.log("[Aetna] Crawl ready. Select the required member manually.");
+            return;
+        }
+
+        if (_isPatientDetailsPage()) {
+            var detailsState = _getCrawlState();
+            detailsState.running = true;
+            detailsState.stage = "patient_details";
+            Object.assign(detailsState, _capturePatientDetails());
+            _saveCrawlState(detailsState);
+            await _submitProcedureCodeSearch();
+            return;
+        }
+
+        if (isBenefitsPage()) {
+            if (_isBenefitDetailUnavailablePage()) {
+                console.log("[Aetna] Benefit detail unavailable. Downloading payload with empty benefit sections.");
+            }
+            var data = buildAetnaPayload();
+            downloadAetnaJSON(data);
+            _clearCrawlState();
+            return;
+        }
+
+        throw new Error("This is not a supported ClaimConnect crawl page");
+    } finally {
+        // Navigation normally destroys this page. Resetting also allows a
+        // manual retry when ClaimConnect rejects or does not navigate.
+        setTimeout(function() { window.__aetnaCrawlBusy = false; }, 1000);
+    }
+}
+
+// ══════════════════════════════════════════════════════════════════════════
 // GUARD
 // ══════════════════════════════════════════════════════════════════════════
 
+function _isBenefitDetailUnavailablePage() {
+    var text = document.body?.innerText || "";
+    return text.includes("Plan Benefits") && /BENEFIT\s+DETAIL\s+UNAVAILABLE/i.test(text);
+}
+
 function isBenefitsPage() {
-    return document.body?.innerText?.includes("Service Level Benefits");
+    var text = document.body?.innerText || "";
+
+    // Normal benefits response contains the Service Level Benefits table.
+    // Some valid Aetna/ClaimConnect responses contain no benefit tables at all
+    // and only show Plan Level Remarks -> BENEFIT DETAIL UNAVAILABLE. That is
+    // still a completed benefits response and must be downloaded with empty
+    // benefit arrays instead of being treated as an unsupported page.
+    return text.includes("Service Level Benefits") || _isBenefitDetailUnavailablePage();
 }
 
 // ══════════════════════════════════════════════════════════════════════════
@@ -233,6 +581,13 @@ function buildAetnaPayload() {
         patient:   getMultiTabValues("Member ID or SSN:"),
         payer:     getMultiTabValues("Coverage:"),
         dates:     getMultiTabValues("Plan Begin:"),
+        subscriber:              _getCrawlState().subscriber || {},
+        eligibility_members:     _getCrawlState().eligibility_members || [],
+        selected_member:         _getCrawlState().selected_member || null,
+        patient_information:     _getCrawlState().patient_information || {},
+        provider_details:        _getCrawlState().provider_details || {},
+        coverage_details:        _getCrawlState().coverage_details || {},
+        requested_procedure_codes: _getCrawlState().requested_procedure_codes || PROCEDURE_CODES.slice(),
         plan_level_remarks:      t.remarks,
         maximums:                md.maximums,               // In-Network only
         maximums_out_of_network: md.maximums_out_of_network, // reference only, not used in patient notes
@@ -266,6 +621,25 @@ function downloadAetnaJSON(data) {
 // ══════════════════════════════════════════════════════════════════════════
 
 window.__aetnaDownload = function() {
-    const data = buildAetnaPayload();
-    downloadAetnaJSON(data);
+    return continueAetnaCrawl().catch(function(error) {
+        console.error("[Aetna] Crawl failed:", error);
+        window.__aetnaCrawlBusy = false;
+        throw error;
+    });
 };
+
+// Optional clearer alias; the existing popup can continue using
+// window.__aetnaDownload() without any changes.
+window.__claimConnectCrawl = window.__aetnaDownload;
+window.__claimConnectProcedureCodes = PROCEDURE_CODES.slice();
+
+// Continue automatically after Wicket navigates to the next crawl page.
+setTimeout(function() {
+    var state = _getCrawlState();
+    if (state.running && !_isEligibilityResultsPage()) {
+        continueAetnaCrawl().catch(function(error) {
+            console.error("[Aetna] Automatic crawl continuation failed:", error);
+            window.__aetnaCrawlBusy = false;
+        });
+    }
+}, 500);

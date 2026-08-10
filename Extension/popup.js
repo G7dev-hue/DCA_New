@@ -168,8 +168,43 @@ document.addEventListener('DOMContentLoaded', async () => {
     const isDeltaMA = url.includes('deltadentalma.com/');
     const isDeltaToolkit = url.includes('dentalofficetoolkit.com');    
     // ── Load stored data ──
-    const result  = await chrome.storage.local.get("audit_context");
+    const result  = await chrome.storage.local.get(["audit_context", "crawl_progress"]);
     const context = result.audit_context || {};
+    const savedProgress = result.crawl_progress || null;
+
+    const renderDDRIProgress = (payload) => {
+        if (!payload || payload.carrier !== "DDRI") return;
+
+        const pct = Number.isFinite(Number(payload.progress))
+            ? Math.max(0, Math.min(100, Math.round(Number(payload.progress))))
+            : null;
+        const lines = [];
+        lines.push(pct === null ? "DD_RI crawl running" : `DD_RI crawl: ${pct}%`);
+        if (payload.title) lines.push(payload.title);
+        if (payload.message) lines.push(payload.message);
+        status.innerText = lines.join("\n");
+
+        const done = payload.state === "COMPLETE";
+        const failed = payload.state === "FAILED";
+        btnCrawl.disabled = !done && !failed;
+        btnCrawl.textContent = done ? "Crawl Again" : (failed ? "Retry Crawl" : "Crawling...");
+    };
+
+    // RI progress is emitted by content_DD_RI.js. Runtime updates cover a popup
+    // that stays open; storage updates also let a reopened popup resume status.
+    if (isDeltaRI) {
+        chrome.runtime.onMessage.addListener((msg) => {
+            if (msg?.type === "PROGRESS_UPDATE" && msg.payload?.carrier === "DDRI") {
+                renderDDRIProgress(msg.payload);
+            }
+        });
+
+        chrome.storage.onChanged.addListener((changes, areaName) => {
+            if (areaName === "local" && changes.crawl_progress?.newValue?.carrier === "DDRI") {
+                renderDDRIProgress(changes.crawl_progress.newValue);
+            }
+        });
+    }
 
     // ── Status display ──
     if (isOverview) {
@@ -189,7 +224,12 @@ document.addEventListener('DOMContentLoaded', async () => {
     } else if (isAetna) {                                                 // ← NEW
         status.innerText = "ClaimConnect detected. Click Crawl to scrape plan benefits.";
     } else if (isDeltaRI) {
-        status.innerText = "DD_RI: Ready";
+        if (savedProgress && savedProgress.carrier === "DDRI" &&
+            savedProgress.state !== "COMPLETE" && savedProgress.state !== "FAILED") {
+            renderDDRIProgress(savedProgress);
+        } else {
+            status.innerText = "DD_RI: Ready. Click Crawl to start.";
+        }
     } else if (isDeltaAR) {
         status.innerText = "DD_AR: Ready";
     } else if (isUCCI) {
@@ -272,7 +312,12 @@ document.addEventListener('DOMContentLoaded', async () => {
                 status.innerText = "Error: Refresh page and try again.";
                 console.warn("Crawl message error:", chrome.runtime.lastError.message);
             } else {
-                if (isDeltaToolkit) {
+                if (isDeltaRI) {
+                    // Keep the popup open so the user can see live RI progress.
+                    btnCrawl.disabled = true;
+                    btnCrawl.textContent = "Crawling...";
+                    status.innerText = "DD_RI crawl: 0%\nStarting RI crawler...";
+                } else if (isDeltaToolkit) {
                     status.innerText = "Crawl started... Please wait.";
                     // Listen for progress updates
                     chrome.runtime.onMessage.addListener((msg) => {

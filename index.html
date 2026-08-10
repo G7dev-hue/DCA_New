@@ -146,7 +146,8 @@
         .modal-overlay.active { display:flex; }
         .modal-box {
             background:#1e1e34; border:1px solid rgba(0,210,255,0.3);
-            border-radius:14px; padding:36px 32px; width:480px; max-width:92vw;
+            border-radius:14px; padding:36px 32px; width:520px; max-width:92vw;
+            max-height:86vh; overflow-y:auto;
             box-shadow:0 16px 48px rgba(0,0,0,0.6); animation:slideUp 0.28s ease;
         }
         .modal-box h2 { margin:0 0 6px; color:#fff; font-size:1.1rem; font-weight:700; }
@@ -167,6 +168,11 @@
         .modal-field select:focus { border-color:#00d2ff; }
         /* Style the select dropdown options */
         .modal-field select option { background:#1e1e34; color:#fff; }
+        .modal-section-title {
+            margin:22px 0 12px; padding-top:10px; border-top:1px solid rgba(255,255,255,0.08);
+            color:#00d2ff; font-size:0.65rem; font-weight:700; text-transform:uppercase; letter-spacing:0.12em;
+        }
+        .modal-source { display:block; margin-top:5px; color:#6f7890; font-size:0.65rem; text-transform:none; letter-spacing:0; }
         .modal-btn-row { display:flex; gap:12px; margin-top:6px; }
         .modal-btn {
             flex:1; padding:11px; border-radius:7px; border:none;
@@ -245,19 +251,19 @@
 <div class="tab-pane active" id="paneMatch">
 <div class="card">
     <h1>🔍 AI Patient Reconciliation</h1>
-    <p class="subtitle">Upload your Portal export and Denticon export to match patients, generate notes, and create new plan PDFs.</p>
+    <p class="subtitle">Upload the Portal export and Denticon export. Denticon is required for matching, patient notes, and New Plan PDF generation.</p>
 
     <div class="section-label">01 — Upload Files</div>
     <div class="upload-grid">
         <div class="upload-box" id="boxPortal">
             <h3>1. Portal JSON</h3>
-            <p style="font-size:13px;color:#a0aabf;">(Cigna / MetLife Export)</p>
+            <p style="font-size:13px;color:#a0aabf;">(Aetna / Cigna / MetLife JSON, or supported insurance PDF)</p>
             <input type="file" id="filePortal" accept=".json,.pdf">
             <div id="statusPortal" style="font-weight:500;margin-top:10px;color:#a0aabf;">Waiting for file…</div>
         </div>
         <div class="upload-box" id="boxDenticon">
-            <h3>2. Denticon JSON</h3>
-            <p style="font-size:13px;color:#a0aabf;">(Deep Audit Export)</p>
+            <h3>2. Denticon JSON <span style="font-size:0.72rem;color:#8b93a7;font-weight:500;">(Required)</span></h3>
+            <p style="font-size:13px;color:#a0aabf;">Deep Audit Export · Required for Match / Patient Notes / New Plan</p>
             <input type="file" id="fileDenticon" accept=".json">
             <div id="statusDenticon" style="font-weight:500;margin-top:10px;color:#a0aabf;">Waiting for file…</div>
         </div>
@@ -367,43 +373,15 @@
 </div>
 </div><!-- /paneAppt -->
 
-<!-- ══ Insurance Override Modal ══ -->
+<!-- ══ New Plan Review / Override Modal ══ -->
 <div class="modal-overlay" id="insOverlayModal">
     <div class="modal-box">
-        <h2>⚠️ Insurance Details Required</h2>
+        <h2>📄 Review New Plan Details</h2>
         <p id="insModalReason"></p>
-        <div class="modal-field">
-            <label>Insurance Name</label>
-            <input type="text" id="modalInsName" placeholder="e.g. MetLife (IN) — PO Box 981282 — 79998">
-        </div>
-        <div class="modal-field">
-            <label>Fee Schedule</label>
-            <input type="text" id="modalFeeSchedule" placeholder="e.g. Metlife PPO">
-        </div>
-        <div class="modal-field">
-            <label>Provider Network Status</label>
-            <select id="modalProviderNetworkStatus">
-                <option value="">— Select —</option>
-                <option value="PPO">PPO</option>
-                <option value="IN">IN</option>
-                <option value="OUT">OUT</option>
-            </select>
-        </div>
-        <!-- ★ NEW FIELD: Relation to Subscriber ★ -->
-        <div class="modal-field">
-            <label>Relation to Subscriber</label>
-            <select id="modalRelation">
-                <option value="">— Select —</option>
-                <option value="Self">Self</option>
-                <option value="Spouse">Spouse</option>
-                <option value="Child">Child</option>
-                <option value="Dependent">Dependent</option>
-                <option value="Other">Other</option>
-            </select>
-        </div>
+        <div id="insModalFields"></div>
         <div class="modal-btn-row">
             <button class="modal-btn cancel" id="insModalCancel">Cancel</button>
-            <button class="modal-btn confirm" id="insModalConfirm">✔ Use These &amp; Generate PDF</button>
+            <button class="modal-btn confirm" id="insModalConfirm">✔ Generate PDF</button>
         </div>
     </div>
 </div>
@@ -450,6 +428,7 @@ function handleFile(event, type) {
             const parsed = JSON.parse(e.target.result);
             if (type === 'portal') {
                 portalData = parsed;
+                primeNewPlanFieldSchema();
                 document.getElementById('statusPortal').innerText = '✅ Loaded successfully';
                 document.getElementById('statusPortal').style.color = '#00e676';
                 document.getElementById('boxPortal').classList.add('ready');
@@ -482,6 +461,7 @@ async function handlePdfUpload(file) {
             throw new Error(`Server error ${response.status}: ${detail}`);
         }
         portalData = await response.json();
+        primeNewPlanFieldSchema();
         statusEl.innerText = `✅ PDF parsed (${portalData.summary?.insurer || 'insurance'})`;
         statusEl.style.color = '#00e676';
         document.getElementById('boxPortal').classList.add('ready');
@@ -495,8 +475,9 @@ async function handlePdfUpload(file) {
 }
 function refreshButtons() {
     const both = !!(portalData && denticonData);
-    btnMatch.disabled   = !both;
-    btnNotes.disabled   = !both;
+
+    btnMatch.disabled = !both;
+    btnNotes.disabled = !both;
     btnNewPlan.disabled = !both;
 }
 filePortal.addEventListener('change',   e => handleFile(e, 'portal'));
@@ -787,8 +768,34 @@ document.getElementById('btnDownload').addEventListener('click', () => {
     a.click();
 });
 
+
+/* ─────────────────────────────────────────
+   PDF DOWNLOAD FILENAME
+───────────────────────────────────────── */
+function getPdfDownloadFilename(response, fallback = 'Insurance_Plan.pdf') {
+    const explicit = response.headers.get('X-Download-Filename');
+    if (explicit && explicit.trim()) return explicit.trim();
+
+    const disposition = response.headers.get('Content-Disposition') || '';
+
+    // RFC 5987 form: filename*=UTF-8''Patient_Name.pdf
+    const encoded = disposition.match(/filename\*\s*=\s*UTF-8''([^;]+)/i);
+    if (encoded && encoded[1]) {
+        try {
+            return decodeURIComponent(encoded[1].trim().replace(/^['"]|['"]$/g, ''));
+        } catch (_) {
+            // Fall through to ordinary filename parsing.
+        }
+    }
+
+    // Ordinary quoted or unquoted filename= form.
+    const ordinary = disposition.match(/filename\s*=\s*(?:"([^"]+)"|([^;]+))/i);
+    const value = ordinary && (ordinary[1] || ordinary[2]);
+    return value ? value.trim().replace(/^['"]|['"]$/g, '') : fallback;
+}
+
 /* ═══════════════════════════════════════════════════════════════
-   KNOWN SUITES
+   NEW PLAN FORM / OVERRIDES — LAZY / INSTANT UI
 ═══════════════════════════════════════════════════════════════ */
 const RACINE_SUITES = [
     'racine dental group suite 1',
@@ -801,126 +808,337 @@ const RACINE_SUITES = [
 const RACINE_INS_NAME     = 'Insurance Name (IN) MetLife(TX)- PO Box 981282- 79998';
 const RACINE_FEE_SCHEDULE = 'Metlife PPO';
 
-/* ── Modal promise wrapper ── */
-let _resolveModal = null;
+const FALLBACK_COMMON_FIELDS = [
+    { key:'insName', data_key:'ins_name', label:'Insurance Name', section:'Plan Overrides', source:'operator' },
+    { key:'feeSchedule', data_key:'fee_schedule', label:'Fee Schedule', section:'Plan Overrides', source:'operator' },
+    { key:'relationship', data_key:'relationship', label:'Relation to Subscriber', section:'Plan Overrides', source:'operator' },
+    { key:'providerNetworkStatus', data_key:'network_status', label:'Provider Network Status', section:'Plan Overrides', source:'operator' },
+];
 
-function openInsuranceModal(reason) {
+let _resolveModal = null;
+let _activeEditableFields = [];
+let _implicitNewPlanOverrides = {};
+let _newPlanFieldSchema = null;
+let _newPlanFieldSchemaPromise = null;
+
+function cleanEditableValue(value) {
+    const raw = value == null ? '' : String(value).trim();
+    if (/^(?:-|—|n\/?a|none|null|not available)$/i.test(raw)) return '';
+    return raw;
+}
+
+function escapeHtml(value) {
+    return String(value ?? '')
+        .replaceAll('&', '&amp;')
+        .replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;')
+        .replaceAll('"', '&quot;')
+        .replaceAll("'", '&#039;');
+}
+
+function detectNewPlanCarrier(raw) {
+    raw = raw || {};
+    const source = String(raw.source || raw.metlife_data?.source || '').toLowerCase();
+    const payerName = String(raw.payer?.name || raw.coverage_details?.payer || '').toLowerCase();
+    if (raw.metlife_data || source.includes('metlife')) return 'metlife';
+    if (raw.cigna_data || source.includes('cigna')) return 'cigna';
+    if (source.includes('claimconnect') || payerName.includes('aetna')) return 'aetna';
+    return '';
+}
+
+function fallbackNewPlanFieldSchema() {
+    const carrier = detectNewPlanCarrier(portalData);
+    return {
+        carrier,
+        common: FALLBACK_COMMON_FIELDS.map(f => ({ ...f })),
+        carrier_specific: [],
+    };
+}
+
+function primeNewPlanFieldSchema() {
+    _newPlanFieldSchema = null;
+    _newPlanFieldSchemaPromise = null;
+    if (!portalData) return;
+
+    // Lightweight background call: Portal only. No Denticon, procedures,
+    // benefit calculations, LLM work, or PDF preparation happens here.
+    const snapshot = portalData;
+    _newPlanFieldSchemaPromise = fetch('/api/new-plan/fields', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ portal_data: snapshot }),
+    })
+    .then(async response => {
+        if (!response.ok) throw new Error(`Field schema ${response.status}`);
+        return response.json();
+    })
+    .then(schema => {
+        if (portalData === snapshot) _newPlanFieldSchema = schema;
+        return schema;
+    })
+    .catch(err => {
+        console.warn('Using local New Plan field schema fallback:', err);
+        return fallbackNewPlanFieldSchema();
+    });
+}
+
+function formatProviderHint(value) {
+    let raw = cleanEditableValue(value);
+    if (!raw) return '';
+    raw = raw.replace(/\b(?:DMD|DDS|RDH|MD|DO)\b\.?/gi, '').replace(/\s+/g, ' ').trim();
+    if (raw.includes(',')) {
+        const [last, first] = raw.split(',', 2).map(x => x.trim());
+        if (first && last) return `${first} ${last}`.trim();
+    }
+    return raw;
+}
+
+function localDenticonHints() {
+    const dent = extractDenticon(denticonData || {}) || {};
+    const patient = dent.patient || {};
+    const header = dent.header || {};
+    const primaryInsurance = dent.primary_insurance || {};
+    return {
+        // Office is used only for the existing Racine convenience. Office/provider
+        // values remain non-editable. MetLife SSN is the single Denticon-derived
+        // editable exception and is shown only as a placeholder.
+        officeName: cleanEditableValue(g(patient, 'home_office') || g(header, 'office_name')),
+        ssn: cleanEditableValue(g(
+            primaryInsurance,
+            'sub_id', 'subscriber_id', 'subscriberId', 'member_id', 'memberId', 'ssn'
+        )),
+    };
+}
+
+
+function localPortalHints(carrier) {
+    const raw = portalData || {};
+    const hints = {};
+
+    if (carrier === 'metlife') {
+        const ml = raw.metlife_data || raw;
+        const patient = ml.patient || {};
+        const plan = ml.plan_details || {};
+        hints.insName = '(IN) MetLife(TX)- PO Box 981282- 79998';
+        hints.feeSchedule = 'METLIFE PPO';
+        hints.relationship = cleanEditableValue(patient.relationship || raw.subscriber_info?.relation);
+    } else if (carrier === 'cigna') {
+        hints.insName = '(IN) CIGNA';
+        hints.relationship = cleanEditableValue(raw.patient?.relationship);
+    } else if (carrier === 'aetna') {
+        const payer = raw.payer || {};
+        const coverage = raw.coverage_details || {};
+        hints.insName = '(IN) Aetna';
+        hints.feeSchedule = cleanEditableValue(payer.network_type || coverage.network_type);
+        hints.relationship = cleanEditableValue(
+            raw.selected_member?.relationship || raw.patient_information?.relationship || raw.patient?.relationship
+        );
+        if (!hints.relationship && /^employee$/i.test(String(payer.coverage || '').trim())) {
+            hints.relationship = 'Self';
+        }
+        hints.providerNetworkStatus = 'IN';
+    } else {
+        hints.relationship = cleanEditableValue(raw.patient?.relationship);
+    }
+    return hints;
+}
+
+function buildNewPlanHints(schema) {
+    const carrier = schema?.carrier || detectNewPlanCarrier(portalData);
+    const portalHints = localPortalHints(carrier);
+    const dentHints = localDenticonHints();
+    const hints = { ...portalHints };
+
+    // Denticon office/provider values remain authoritative. MetLife SSN /
+    // Subscriber ID is the single Denticon-derived editable exception.
+    if (carrier === 'metlife' && dentHints.ssn) hints.ssn = dentHints.ssn;
+
+    _implicitNewPlanOverrides = {};
+    const officeName = cleanEditableValue(dentHints.officeName).toLowerCase();
+    const networkRaw = cleanEditableValue(hints.providerNetworkStatus);
+    const isOutNet = /out(\s*of\s*network|-of-network)?/i.test(networkRaw) || /^OUT$/i.test(networkRaw);
+    if (RACINE_SUITES.includes(officeName) && !isOutNet) {
+        hints.insName = RACINE_INS_NAME;
+        hints.feeSchedule = RACINE_FEE_SCHEDULE;
+        // Preserve the existing Racine auto behavior while still showing it as
+        // a placeholder. Explicit user entries overwrite these defaults.
+        _implicitNewPlanOverrides.insName = RACINE_INS_NAME;
+        _implicitNewPlanOverrides.feeSchedule = RACINE_FEE_SCHEDULE;
+    }
+    return hints;
+}
+
+function fieldByKey(fields, key) {
+    return fields.find(f => f && f.key === key) || null;
+}
+
+function renderEditableFields(editableFields) {
+    const common = Array.isArray(editableFields?.common) ? editableFields.common : [];
+    const carrierSpecific = Array.isArray(editableFields?.carrier_specific)
+        ? editableFields.carrier_specific : [];
+    const all = [...common, ...carrierSpecific].map(f => ({ ...f }));
+    const hints = buildNewPlanHints(editableFields || {});
+
+    _activeEditableFields = all;
+    const target = document.getElementById('insModalFields');
+    target.innerHTML = '';
+
+    let lastSection = null;
+    all.forEach(field => {
+        const section = field.section || 'Plan Overrides';
+        if (section !== lastSection) {
+            const title = document.createElement('div');
+            title.className = 'modal-section-title';
+            title.textContent = section;
+            target.appendChild(title);
+            lastSection = section;
+        }
+
+        const wrap = document.createElement('div');
+        wrap.className = 'modal-field';
+
+        const hint = cleanEditableValue(hints[field.key]);
+        const label = document.createElement('label');
+        label.textContent = field.label || field.key;
+        const src = document.createElement('span');
+        src.className = 'modal-source';
+        src.textContent = hint
+            ? `Using: ${hint} · leave blank to keep it`
+            : 'No detected prefill · enter only if needed';
+        label.appendChild(src);
+        wrap.appendChild(label);
+
+        let input;
+        if (field.key === 'relationship') {
+            input = document.createElement('select');
+            const firstLabel = hint ? `Using: ${hint}` : '— Leave unchanged —';
+            input.innerHTML = [
+                { value:'',          label:firstLabel },
+                { value:'Self',      label:'Self' },
+                { value:'Spouse',    label:'Spouse' },
+                { value:'Child',     label:'Child' },
+                { value:'Dependent', label:'Dependent' },
+                { value:'Other',     label:'Other' },
+            ].map(opt => `<option value="${escapeHtml(opt.value)}">${escapeHtml(opt.label)}</option>`).join('');
+        } else if (field.key === 'providerNetworkStatus') {
+            input = document.createElement('select');
+            const firstLabel = hint ? `Using: ${hint}` : '— Leave unchanged —';
+            input.innerHTML = [
+                { value:'',    label:firstLabel },
+                { value:'PPO', label:'PPO' },
+                { value:'IN',  label:'IN' },
+                { value:'OUT', label:'OUT' },
+            ].map(opt => `<option value="${escapeHtml(opt.value)}">${escapeHtml(opt.label)}</option>`).join('');
+        } else {
+            input = document.createElement('input');
+            input.type = 'text';
+            input.value = '';
+            input.placeholder = hint ? `Using: ${hint}` : 'Enter if needed';
+            if (field.key === 'ssn') input.autocomplete = 'off';
+        }
+
+        input.dataset.overrideKey = field.key;
+        wrap.appendChild(input);
+        target.appendChild(wrap);
+    });
+}
+
+function openInsuranceModal(reason, editableFields) {
     document.getElementById('insModalReason').textContent = reason;
-    document.getElementById('modalInsName').value         = '';
-    document.getElementById('modalFeeSchedule').value     = '';
-    document.getElementById('modalProviderNetworkStatus').value = '';
-    document.getElementById('modalRelation').value        = '';   // ★ reset dropdown
+    renderEditableFields(editableFields);
     document.getElementById('insOverlayModal').classList.add('active');
-    document.getElementById('modalInsName').focus();
+
+    const firstInput = document.querySelector('#insModalFields input, #insModalFields select');
+    if (firstInput) firstInput.focus();
+
     return new Promise(resolve => { _resolveModal = resolve; });
 }
 
 document.getElementById('insModalCancel').addEventListener('click', () => {
     document.getElementById('insOverlayModal').classList.remove('active');
     if (_resolveModal) _resolveModal(null);
+    _resolveModal = null;
 });
 
-/* ★ PATCH 2: capture the new relationship field ★ */
 document.getElementById('insModalConfirm').addEventListener('click', () => {
-    const insName      = document.getElementById('modalInsName').value.trim();
-    const feeSchedule  = document.getElementById('modalFeeSchedule').value.trim();
-    const providerNetworkStatus = document.getElementById('modalProviderNetworkStatus').value.trim();
-    const relationship = document.getElementById('modalRelation').value.trim();   // ★
+    const overrides = { ..._implicitNewPlanOverrides };
+    document.querySelectorAll('#insModalFields [data-override-key]').forEach(el => {
+        const key = el.dataset.overrideKey;
+        const value = String(el.value || '').trim();
+        if (key && value) overrides[key] = value;
+    });
+
     document.getElementById('insOverlayModal').classList.remove('active');
-    if (_resolveModal) _resolveModal({ insName, feeSchedule, providerNetworkStatus, relationship });     // ★
+    if (_resolveModal) _resolveModal(overrides);
+    _resolveModal = null;
 });
 
-/* ── Resolve insurance fields before PDF generation ── */
-async function resolveInsuranceFields() {
-    const ins        = extractInsurance(portalData);
-    const dent       = extractDenticon(denticonData);
-    const officeName = (g(dent, 'office_name', 'officeName', 'office') || '').trim().toLowerCase();
-    const networkRaw = g(ins, 'network_status', 'providerNetworkStatus', 'in_network', 'network') || '';
-    const isOutNet   = /out(\s*of\s*network|-of-network)?/i.test(networkRaw);
-    const isRacine   = RACINE_SUITES.includes(officeName);
-
-    if (isRacine && !isOutNet) {
-        /* ★ PATCH 3: Racine auto also carries empty relationship ★ */
-        return { insName: RACINE_INS_NAME, feeSchedule: RACINE_FEE_SCHEDULE, providerNetworkStatus: '', relationship: '' };
-    }
-
-    const reason = isOutNet
-        ? `Provider Network Status is "${networkRaw || 'Out of Network'}". Please enter the correct insurance details for this out-of-network plan.`
-        : `Please enter the Insurance Name and Fee Schedule manually.`;
-
-    return openInsuranceModal(reason);
+function resolveNewPlanOverrides() {
+    // Never block the click on full plan preparation. The field schema was
+    // primed in the background at Portal upload; if it is not ready yet, the
+    // equivalent local fallback opens the modal immediately.
+    const editable = _newPlanFieldSchema || fallbackNewPlanFieldSchema();
+    const carrierName = String(editable.carrier || 'insurance').toUpperCase();
+    const reason = `${carrierName}: Denticon supplies office/provider details. Editable plan fields are shown with detected values as placeholders; leave blank to keep them.`;
+    return openInsuranceModal(reason, editable);
 }
 
 btnNewPlan.addEventListener('click', async () => {
-
     planOutput.innerHTML = '';
-    planLoader.classList.add('visible');
-    btnNewPlan.disabled = true;
-
-    const insFields = await resolveInsuranceFields();
-    if (!insFields) {
-        planLoader.classList.remove('visible');
-        refreshButtons();
-        return;
-    }
-    window._insOverride = insFields;
 
     try {
+        if (!portalData || !denticonData) throw new Error('Upload both Portal and Denticon files first.');
 
-        /* ★ PATCH 4: inject relationship into denticon data before sending ★ */
-        const denticonWithRel = JSON.parse(JSON.stringify(denticonData));
-        if (insFields.relationship) {
-            const dent = denticonWithRel.denticon_data || denticonWithRel;
+        // Modal opens immediately; no loader while merely reviewing fields.
+        const overrides = await resolveNewPlanOverrides();
+        if (!overrides) return;
 
-            // Inject into primary_insurance (checked by _extract as dent_pi)
-            if (!dent.primary_insurance) dent.primary_insurance = {};
-            dent.primary_insurance.relation_to_subscriber = insFields.relationship;
-
-            // Inject into patient block (checked by _extract as dent_pt)
-            if (!dent.patient) dent.patient = {};
-            dent.patient.relationship = insFields.relationship;
-
-            // Also inject into metlife_data.patient if present
-            if (denticonWithRel.metlife_data && denticonWithRel.metlife_data.patient) {
-                denticonWithRel.metlife_data.patient.relationship = insFields.relationship;
-            }
-        }
+        // Full carrier + Denticon + benefit parsing happens once, only here.
+        planLoader.classList.add('visible');
+        btnNewPlan.disabled = true;
 
         const response = await fetch('/api/new-plan', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-                portal_data:   portalData,
-                denticon_data: denticonWithRel,   // ★ includes relationship
-                ins_override:  insFields
-            })
+                portal_data: portalData,
+                denticon_data: denticonData,
+                ins_override: overrides,
+                download_filename: null,
+            }),
         });
 
-        if (!response.ok) throw new Error(`Server error: ${response.status}`);
+        if (!response.ok) {
+            let detail = `Server error ${response.status}`;
+            try { detail = (await response.json()).detail || detail; } catch (_) {}
+            throw new Error(detail);
+        }
 
+        const downloadFilename = getPdfDownloadFilename(response);
+        const filenameVersion = response.headers.get('X-PDF-Filename-Version') || 'unknown';
         const blob = await response.blob();
-        if (blob.size === 0) throw new Error("Generated PDF is empty");
+        if (blob.size === 0) throw new Error('Generated PDF is empty');
 
         const url = window.URL.createObjectURL(blob);
-        const a   = document.createElement('a');
-        a.href     = url;
-        a.download = 'Insurance_Plan.pdf';
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = downloadFilename;
         document.body.appendChild(a);
         a.click();
         a.remove();
-        window.URL.revokeObjectURL(url);
+        window.setTimeout(() => window.URL.revokeObjectURL(url), 1000);
 
         planOutput.innerHTML = `
             <div class="result-card plan-success" style="margin-top:20px;">
                 <h2 style="color:#ff9800;margin-top:0;">📄 New Plan PDF Generated!</h2>
-                <p style="color:#d1d5db;margin:0;">PDF downloaded successfully.</p>
+                <p style="color:#d1d5db;margin:0;">Downloaded as <strong>${escapeHtml(downloadFilename)}</strong>.</p>
+                <p style="color:#8b93a7;margin:6px 0 0;font-size:0.75rem;">Filename API: ${escapeHtml(filenameVersion)}</p>
             </div>`;
-
-    } catch(err) {
+    } catch (err) {
         console.error(err);
         planOutput.innerHTML = `
             <div class="result-card match-fail" style="color:#ff1744;font-weight:bold;margin-top:16px;">
-                ❌ PDF Error: ${err.message}
+                ❌ PDF Error: ${escapeHtml(err.message)}
             </div>`;
     } finally {
         planLoader.classList.remove('visible');
@@ -946,10 +1164,12 @@ function g(obj, ...keys) {
 }
 
 function extractInsurance(raw) {
+    if (!raw || typeof raw !== 'object') return {};
     return raw.metlife_data || raw.cigna_data || raw.delta_data || raw.insurance_data || raw;
 }
 
 function extractDenticon(raw) {
+    if (!raw || typeof raw !== 'object') return {};
     return raw.denticon_data || raw;
 }
 

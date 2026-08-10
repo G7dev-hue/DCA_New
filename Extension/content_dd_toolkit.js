@@ -40,7 +40,10 @@
     const PAGE_SOURCE = "delta-toolkit-page";
     const RESULT_STORAGE_KEY = "dentaquest_data";
     const TARGET_ORIGIN = "https://www.dentalofficetoolkit.com";
-    const MEMBER_SEARCH_PATH = "/api/dot-gateway/v1/benefit/memberbenefits/search";
+    // Member search endpoint from HAR - v02/memberdetail/search is the actual endpoint
+    const MEMBER_SEARCH_PATH = "/api/dot-gateway/v02/memberdetail/search";
+    // Also accept the v1 path as fallback for compatibility
+    const MEMBER_SEARCH_PATH_V1 = "/api/dot-gateway/v1/benefit/memberbenefits/search";
     const PROCEDURE_SEARCH_PATH = "/api/dot-gateway/v1/benefit/memberbenefits/procedures/search";
     const PROCEDURE_SEARCH_URL = `${TARGET_ORIGIN}${PROCEDURE_SEARCH_PATH}?type=codes`;
 
@@ -347,6 +350,17 @@
         const body = parseRequestBody(request.bodyText);
         const path = parsedUrl.pathname;
 
+        // Handle the actual member search endpoint from HAR (v02/memberdetail/search)
+        // Also accept v1 path as fallback for compatibility
+        if (path === MEMBER_SEARCH_PATH || path === MEMBER_SEARCH_PATH_V1) {
+            state.memberSearchRequest = body || state.memberSearchRequest;
+            state.memberSearchResponse = responseData;
+            persistNonSecretState(state);
+            setStatus(state, "Member details captured. Run one procedure lookup if you have not already.", "ready");
+            return;
+        }
+
+        // These endpoints are not observed in current HAR but kept for compatibility
         if (path === "/api/dot-gateway/v1/benefit/memberbenefits/routineprocedures/search") {
             state.routineProceduresResponse = responseData;
             persistNonSecretState(state);
@@ -355,13 +369,6 @@
         if (path === "/api/dot-gateway/v1/benefit/client/search") {
             state.clientSearchResponse = responseData;
             persistNonSecretState(state);
-            return;
-        }
-        if (path === MEMBER_SEARCH_PATH) {
-            state.memberSearchRequest = body || state.memberSearchRequest;
-            state.memberSearchResponse = responseData;
-            persistNonSecretState(state);
-            setStatus(state, "Member details captured. Run one procedure lookup if you have not already.", "ready");
             return;
         }
 
@@ -842,6 +849,7 @@
                 requested_field_map: buildRequestedFieldMap(procMap, provisions),
                 captured_endpoints: uniqueStrings([
                     MEMBER_SEARCH_PATH,
+                    MEMBER_SEARCH_PATH_V1,
                     PROCEDURE_SEARCH_PATH,
                     ...state.supportingApiResponses.map(item => item.endpoint)
                 ]),
@@ -1218,7 +1226,7 @@
 
     function safeReplayHeaders(headers) {
         const source = headersToObject(headers);
-        const allowed = ["authorization", "accept", "content-type", "x-requested-with"];
+        const allowed = ["authorization", "accept", "content-type", "x-requested-with", "x-dtpc"];
         const output = {};
         for (const key of allowed) {
             if (source[key]) output[key] = source[key];

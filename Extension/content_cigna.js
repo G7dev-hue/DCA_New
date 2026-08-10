@@ -1483,6 +1483,13 @@ const DESCRIPTION_CONCURRENCY = 8;
 const BENEFIT_REQUEST_CONCURRENCY = 3;
 const PROCEDURES_PER_REQUEST = 10;
 
+// Cigna returns the most reliable implant details when these related D6xxx
+// procedures are evaluated together. Keep them in one dedicated request and
+// never mix or split this required group during normal lookup/retry handling.
+const CIGNA_GROUPED_BENEFIT_BATCH_CODES = Object.freeze([
+    "D6194", "D6010", "D6065", "D6056"
+]);
+
 // These are local crawler settings.  Do not try to read a same-named global in
 // their initializer: `const value = typeof value ...` throws before the crawl
 // starts because the local binding is still in its temporal dead zone.
@@ -2124,6 +2131,30 @@ function applyCoverageApi(baseData, coverage) {
     };
 }
 
+function buildBenefitBatches(procedures) {
+    const byCode = new Map(procedures.map(item => [normalizeProcedureCode(item?.code), item]));
+    const groupedBatch = CIGNA_GROUPED_BENEFIT_BATCH_CODES.map(code => byCode.get(code)).filter(Boolean);
+    if (groupedBatch.length !== CIGNA_GROUPED_BENEFIT_BATCH_CODES.length) {
+        const missing = CIGNA_GROUPED_BENEFIT_BATCH_CODES.filter(code => !byCode.has(code));
+        throw new Error(`Required grouped Cigna procedure batch is incomplete: ${missing.join(", ")}`);
+    }
+
+    const groupedCodes = new Set(CIGNA_GROUPED_BENEFIT_BATCH_CODES);
+    const remaining = procedures.filter(item => !groupedCodes.has(normalizeProcedureCode(item?.code)));
+    const batches = [groupedBatch];
+    for (let i = 0; i < remaining.length; i += PROCEDURES_PER_REQUEST) {
+        batches.push(remaining.slice(i, i + PROCEDURES_PER_REQUEST));
+    }
+    console.info("Cigna: Dedicated grouped benefit batch", groupedBatch.map(procedureDebugEntry));
+    return batches;
+}
+
+function isGroupedBenefitBatch(batch) {
+    if (!Array.isArray(batch) || batch.length !== CIGNA_GROUPED_BENEFIT_BATCH_CODES.length) return false;
+    const codes = new Set(batch.map(item => normalizeProcedureCode(item?.code)));
+    return CIGNA_GROUPED_BENEFIT_BATCH_CODES.every(code => codes.has(code));
+}
+
 function matchBenefitResponse(batch, data, found, failures, stats) {
     const requested = new Map(batch.map(item => [item.code, item]));
     const items = Array.isArray(data?.dentalBenefits) ? data.dentalBenefits : [];
@@ -2171,6 +2202,15 @@ async function fetchBenefitBatch(batch, found, failures, stats, attempt = 0) {
         const omitted = matchBenefitResponse(batch, data, found, failures, stats);
         if (omitted.length) {
             stats.missing_response_retries++;
+            if (isGroupedBenefitBatch(batch)) {
+                // Re-request the complete implant group so its codes are never
+                // evaluated separately after a partial/omitted API response.
+                if (attempt < 2) return fetchBenefitBatch(batch, found, failures, stats, attempt + 1);
+                throw Object.assign(new Error("Cigna response repeatedly omitted procedures from the required grouped implant batch."), {
+                    status: 422,
+                    preserveGroupedBatch: true
+                });
+            }
             if (omitted.length < batch.length) return fetchBenefitBatch(omitted, found, failures, stats);
             throw Object.assign(new Error("Cigna response omitted requested procedures."), { status: 422 });
         }
@@ -2188,12 +2228,14 @@ async function fetchBenefitBatch(batch, found, failures, stats, attempt = 0) {
             return fetchBenefitBatch(batch, found, failures, stats, attempt + 1);
         }
         const splittable = [400, 413, 422].includes(error.status);
-        if (splittable && batch.length > 1) {
+        const preserveGroupedBatch = isGroupedBenefitBatch(batch) || error.preserveGroupedBatch;
+        if (splittable && batch.length > 1 && !preserveGroupedBatch) {
             stats.split_http_requests += 2;
             const middle = Math.ceil(batch.length / 2);
             await fetchBenefitBatch(batch.slice(0, middle), found, failures, stats);
             await fetchBenefitBatch(batch.slice(middle), found, failures, stats);
         } else for (const item of batch) {
+            if (found.has(item.code)) continue;
             failures[item.code] = String(error.message || "Benefit lookup failed.").slice(0, 300);
             console.error("Cigna: Procedure benefit lookup ultimately failed", {
                 procedure: procedureDebugEntry(item),
@@ -2276,8 +2318,8 @@ async function crawlProcedureCodes(baseData, run) {
         .map(contextDebugEntry);
     stats.context_defaults_applied = contextDefaultsApplied.length;
     if (contextDefaultsApplied.length) console.info("Cigna default procedure contexts:", contextDefaultsApplied);
-    const found = new Map(), failures = {}, batches = [];
-    for (let i = 0; i < requested.length; i += PROCEDURES_PER_REQUEST) batches.push(requested.slice(i, i + PROCEDURES_PER_REQUEST));
+    const found = new Map(), failures = {};
+    const batches = buildBenefitBatches(requested);
     let completedBatches = 0, activeRequests = 0;
     await runPool(batches, BENEFIT_REQUEST_CONCURRENCY, async batch => {
         activeRequests++; stats.maximum_concurrency_observed = Math.max(stats.maximum_concurrency_observed, activeRequests);

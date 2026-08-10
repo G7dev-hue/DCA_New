@@ -27,6 +27,208 @@ function setReactInputValue(input, value) {
     input.dispatchEvent(new Event('change', { bubbles: true }));
 }
 
+
+// ══════════════════════════════════════════════════════════════════════════
+// PROCEDURE SEARCH NETWORK BRIDGE
+// MetLife builds/sends its own request. We only capture the JSON response.
+// ══════════════════════════════════════════════════════════════════════════
+
+const METLIFE_PROCEDURE_ENDPOINT = "/md2/v1/metdental/eligibility/procedureSearch";
+const METLIFE_PROCEDURE_MESSAGE = "__METLIFE_PROCEDURE_NETWORK_RESPONSE__";
+const METLIFE_PROCEDURE_READY = "__METLIFE_PROCEDURE_NETWORK_READY__";
+
+let metlifeProcedureBridgeReady = false;
+const metlifeProcedureWaiters = [];
+
+function sameProcedureCodeSet(a, b) {
+    const aa = [...new Set((a || []).map(v => String(v).trim().toUpperCase()).filter(Boolean))].sort();
+    const bb = [...new Set((b || []).map(v => String(v).trim().toUpperCase()).filter(Boolean))].sort();
+    return aa.length === bb.length && aa.every((v, i) => v === bb[i]);
+}
+
+function installProcedureNetworkBridge() {
+    window.addEventListener("message", (event) => {
+        if (event.source !== window || !event.data) return;
+
+        if (event.data.type === METLIFE_PROCEDURE_READY) {
+            metlifeProcedureBridgeReady = true;
+            return;
+        }
+
+        if (event.data.type !== METLIFE_PROCEDURE_MESSAGE) return;
+
+        const payload = event.data.payload || {};
+        const requestCodes = payload?.requestBody?.procedureCodes || [];
+
+        for (let i = metlifeProcedureWaiters.length - 1; i >= 0; i--) {
+            const waiter = metlifeProcedureWaiters[i];
+            if (!sameProcedureCodeSet(waiter.codes, requestCodes)) continue;
+
+            metlifeProcedureWaiters.splice(i, 1);
+            clearTimeout(waiter.timer);
+
+            if (payload.error) waiter.reject(new Error(payload.error));
+            else waiter.resolve(payload);
+        }
+    });
+
+    const injected = document.createElement("script");
+    const nonceSource = document.querySelector("script[nonce]");
+    if (nonceSource?.nonce) injected.nonce = nonceSource.nonce;
+
+    injected.textContent = `(() => {
+        if (window.__METLIFE_PROCEDURE_NETWORK_BRIDGE_INSTALLED__) {
+            window.postMessage({ type: ${JSON.stringify(METLIFE_PROCEDURE_READY)} }, "*");
+            return;
+        }
+        window.__METLIFE_PROCEDURE_NETWORK_BRIDGE_INSTALLED__ = true;
+
+        const ENDPOINT = ${JSON.stringify(METLIFE_PROCEDURE_ENDPOINT)};
+        const MESSAGE = ${JSON.stringify(METLIFE_PROCEDURE_MESSAGE)};
+        const READY = ${JSON.stringify(METLIFE_PROCEDURE_READY)};
+
+        const safeJson = (value) => {
+            if (!value) return {};
+            if (typeof value === "object") return value;
+            try { return JSON.parse(value); } catch (_) { return {}; }
+        };
+
+        const publish = (requestBody, responseBody, error = "") => {
+            window.postMessage({
+                type: MESSAGE,
+                payload: {
+                    requestBody: safeJson(requestBody),
+                    responseBody: responseBody || null,
+                    error: error || ""
+                }
+            }, "*");
+        };
+
+        if (typeof window.fetch === "function") {
+            const originalFetch = window.fetch;
+            window.fetch = async function(input, init = {}) {
+                const url = typeof input === "string" ? input : (input?.url || "");
+                const method = String(init?.method || input?.method || "GET").toUpperCase();
+
+                let requestBodyText = init?.body || "";
+                if (!requestBodyText && typeof Request !== "undefined" && input instanceof Request) {
+                    try { requestBodyText = await input.clone().text(); } catch (_) {}
+                }
+
+                const response = await originalFetch.apply(this, arguments);
+
+                if (method === "POST" && String(url).includes(ENDPOINT)) {
+                    try {
+                        const json = await response.clone().json();
+                        publish(requestBodyText, json);
+                    } catch (err) {
+                        publish(requestBodyText, null, "procedureSearch fetch response parse failed: " + (err?.message || err));
+                    }
+                }
+
+                return response;
+            };
+        }
+
+        if (typeof XMLHttpRequest !== "undefined") {
+            const originalOpen = XMLHttpRequest.prototype.open;
+            const originalSend = XMLHttpRequest.prototype.send;
+
+            XMLHttpRequest.prototype.open = function(method, url) {
+                this.__metlifeProcedureMethod = String(method || "GET").toUpperCase();
+                this.__metlifeProcedureUrl = String(url || "");
+                return originalOpen.apply(this, arguments);
+            };
+
+            XMLHttpRequest.prototype.send = function(body) {
+                const isProcedure =
+                    this.__metlifeProcedureMethod === "POST" &&
+                    this.__metlifeProcedureUrl.includes(ENDPOINT);
+
+                if (isProcedure) {
+                    const requestBodyText = body || "";
+                    this.addEventListener("loadend", function() {
+                        try {
+                            let json = null;
+                            if (this.responseType === "json" && this.response) {
+                                json = this.response;
+                            } else {
+                                json = JSON.parse(this.responseText || "{}");
+                            }
+                            publish(requestBodyText, json);
+                        } catch (err) {
+                            publish(requestBodyText, null, "procedureSearch XHR response parse failed: " + (err?.message || err));
+                        }
+                    }, { once: true });
+                }
+
+                return originalSend.apply(this, arguments);
+            };
+        }
+
+        window.postMessage({ type: READY }, "*");
+    })();`;
+
+    (document.documentElement || document.head || document.body).appendChild(injected);
+    injected.remove();
+}
+
+async function ensureProcedureNetworkBridge(timeout = 2500) {
+    if (metlifeProcedureBridgeReady) return true;
+
+    installProcedureNetworkBridge();
+
+    const deadline = Date.now() + timeout;
+    while (Date.now() < deadline) {
+        if (metlifeProcedureBridgeReady) return true;
+        await sleep(50);
+    }
+
+    throw new Error(
+        "MetLife procedure network bridge did not initialize. " +
+        "The page may be blocking injected page-world scripts."
+    );
+}
+
+function waitForProcedureNetworkResponse(codes, timeout = 20000) {
+    return new Promise((resolve, reject) => {
+        const waiter = {
+            codes: [...codes],
+            resolve,
+            reject,
+            timer: null
+        };
+
+        waiter.timer = setTimeout(() => {
+            const index = metlifeProcedureWaiters.indexOf(waiter);
+            if (index >= 0) metlifeProcedureWaiters.splice(index, 1);
+            reject(new Error(`Timed out waiting for MetLife procedureSearch network response: ${codes.join(",")}`));
+        }, timeout);
+
+        metlifeProcedureWaiters.push(waiter);
+    });
+}
+
+function mapProcedureNetworkResponse(payload) {
+    const items = payload?.responseBody?.procedureSearchItems;
+    if (!Array.isArray(items)) {
+        throw new Error("MetLife procedureSearch response missing procedureSearchItems");
+    }
+
+    return items.map(item => ({
+        procedure_code: clean(item?.procedureCode).toUpperCase(),
+        description: clean(item?.description),
+        frequency_limit: clean(item?.frequencyLimit),
+        age_limit: clean(item?.ageLimit),
+        late_date_of_service: normalizeLateDate(item?.lastDateOfService) || "—",
+        deductible: clean(item?.deductible) || "N/A",
+        network_fee: clean(item?.networkFee) || "N/A",
+        benefit_level: clean(item?.benefitLevel) || "N/A",
+        patient_responsibility: clean(item?.patientResponsibility) || "N/A"
+    })).filter(row => row.procedure_code);
+}
+
+
 // 61 codes across 7 batches — chunked into groups of 10 at runtime (site hard limit)
 const BATCH_1 = ["D1110", "D4910", "D4355", "D1206", "D1208", "D0274", "D0210", "D0120", "D0150"];
 const BATCH_2 = ["D2331", "D2140", "D2740", "D1351", "D1510", "D8080", "D0180", "D0140", "D0240"];
@@ -110,24 +312,54 @@ function scrapePatientInfo() {
 // ══════════════════════════════════════════════════════════════════════════
 
 function scrapePlanDetails() {
-    function getLabelValue(labelText) {
+    function getLabelValues(labelText) {
         const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, null, false);
         let node;
+
         while ((node = walker.nextNode())) {
-            if (node.textContent.trim() !== labelText) continue;
+            if (clean(node.textContent) !== labelText) continue;
+
             const labelEl = node.parentElement;
-            const sib = labelEl.nextElementSibling;
-            if (sib?.innerText?.trim()) return clean(sib.innerText);
-            const parentSib = labelEl.parentElement?.nextElementSibling;
-            if (parentSib?.innerText?.trim()) return clean(parentSib.innerText);
+            const detailsColumn = labelEl.closest(".details-column") || labelEl.parentElement;
+
+            // MetLife can place multiple values under one title, for example:
+            // Employer / Group # -> CITY OF RACINE, 148620
+            const columnValues = Array.from(detailsColumn?.querySelectorAll(".details-value") || [])
+                .map(el => clean(el.innerText || el.textContent))
+                .filter(Boolean);
+
+            if (columnValues.length) return columnValues;
+
+            // Generic fallback for labels whose values are ordinary sibling elements.
+            const siblingValues = [];
+            let sibling = labelEl.nextElementSibling;
+            while (sibling && !sibling.matches(".details-title")) {
+                const value = clean(sibling.innerText || sibling.textContent);
+                if (value) siblingValues.push(value);
+                sibling = sibling.nextElementSibling;
+            }
+            if (siblingValues.length) return siblingValues;
+
+            const parentSibling = labelEl.parentElement?.nextElementSibling;
+            const fallbackValue = clean(parentSibling?.innerText || parentSibling?.textContent);
+            if (fallbackValue) return [fallbackValue];
         }
-        return "N/A";
+
+        return [];
     }
+
+    function getLabelValue(labelText) {
+        return getLabelValues(labelText)[0] || "N/A";
+    }
+
+    const employerGroupValues = getLabelValues("Employer / Group #");
+
     return {
         start_date: getLabelValue("Start Date"),
         end_date: getLabelValue("End Date"),
         subscriber_id: getLabelValue("Subscriber SSN or ID"),
-        employer_group: getLabelValue("Employer / Group #"),
+        employer_group: employerGroupValues[0] || "N/A",
+        group_number: employerGroupValues[1] || "N/A",
         network: getLabelValue("Network"),
         address: getLabelValue("Address")
     };
@@ -386,37 +618,123 @@ async function crawlPlanOverview() {
 // ══════════════════════════════════════════════════════════════════════════
 
 async function runOneBatch(codes) {
-    let codeInput = document.querySelector("input[placeholder*='rocedure']") ||
+    await ensureProcedureNetworkBridge();
+
+    let codeInput = document.querySelector("input[aria-label='Procedure Code(s)']") ||
+        document.querySelector("input[placeholder*='rocedure']") ||
         document.querySelector("input[placeholder*='ode']") ||
         document.querySelector("input[aria-label*='rocedure']") ||
         findInputNearSearchButton();
     if (!codeInput) codeInput = await waitForElement("input[type='text']:not([readonly])", 6000);
     if (!codeInput) return [];
 
-    const resetBtn = Array.from(document.querySelectorAll("button")).find(b => b.textContent.trim() === "Reset");
-    if (resetBtn) { resetBtn.click(); await sleep(800); }
-
-    codeInput.focus();
-    setReactInputValue(codeInput, "");
-    await sleep(200);
-    setReactInputValue(codeInput, codes.join(","));
-    await sleep(400);
-
-    const searchBtn = Array.from(document.querySelectorAll("button")).find(b => b.textContent.trim() === "Search" && !b.disabled);
-    if (!searchBtn) return [];
-
-    searchBtn.click();
-    await sleep(2500);
-
-    const deadline = Date.now() + 10000;
-    while (Date.now() < deadline) {
-        const text = document.body.innerText || "";
-        if (codes.some(code => text.includes(code))) break;
+    const resetBtn = document.querySelector("#search-procedure-form-reset-link") ||
+        Array.from(document.querySelectorAll("button,a")).find(el => clean(el.textContent) === "Reset");
+    if (resetBtn) {
+        resetBtn.click();
         await sleep(500);
     }
 
-    await sleep(1200);
-    return scrapeProcedureTable();
+    codeInput.focus();
+    setReactInputValue(codeInput, "");
+    await sleep(150);
+    setReactInputValue(codeInput, codes.join(","));
+    await sleep(350);
+
+    const searchBtn = document.querySelector(".search-procedure-form__search-btn") ||
+        Array.from(document.querySelectorAll("button")).find(b => clean(b.textContent) === "Search" && !b.disabled);
+    if (!searchBtn) return [];
+
+    // Register before Search so we cannot miss the matching response.
+    const responsePromise = waitForProcedureNetworkResponse(codes, 20000);
+    searchBtn.click();
+
+    // Procedure data now comes directly from the network JSON response.
+    const networkPayload = await responsePromise;
+    const results = mapProcedureNetworkResponse(networkPayload);
+
+    console.log(`[Audit] Network batch: ${codes.join(",")} -> ${results.length} row(s)`);
+    for (const row of results) {
+        if (row.late_date_of_service && row.late_date_of_service !== "—") {
+            console.log(`[Audit] ${row.procedure_code} Last Date Of Service: ${row.late_date_of_service}`);
+        }
+    }
+
+    return results;
+}
+
+function procedureTableSignature() {
+    const table = document.querySelector("#procedure-code-data-table table");
+    if (!table) return "";
+    return Array.from(table.querySelectorAll("tbody tr"))
+        .map(row => Array.from(row.querySelectorAll("td")).map(td => clean(td.textContent)).join("|")).join("\n");
+}
+
+async function waitForProcedureBatch(codes, beforeSignature = "", timeout = 18000) {
+    const wanted = new Set(codes.map(code => code.toUpperCase()));
+    const deadline = Date.now() + timeout;
+    const started = Date.now();
+    let lastSignature = "";
+    let stableSince = 0;
+    let bestRows = [];
+
+    while (Date.now() < deadline) {
+        const table = document.querySelector("#procedure-code-data-table table");
+        const rows = table ? Array.from(table.querySelectorAll("tbody tr")) : [];
+
+        if (rows.length) {
+            const parsed = scrapeProcedureTable();
+            const rowCodes = parsed.map(r => r.procedure_code.toUpperCase()).filter(Boolean);
+            const belongsToCurrentBatch = rowCodes.length > 0 && rowCodes.every(code => wanted.has(code));
+            const signature = procedureTableSignature();
+            const tableChanged = !beforeSignature || signature !== beforeSignature;
+
+            // "showing N of N results" gives us the rendered result count when available.
+            const resultHeader = clean(document.querySelector(".procedure-code-data-table__header-text")?.textContent);
+            const countMatch = resultHeader.match(/showing\s+(\d+)\s+of\s+(\d+)\s+results?/i);
+            const expectedRenderedRows = countMatch ? Number(countMatch[1]) : null;
+            const rowCountReady = expectedRenderedRows == null || parsed.length >= expectedRenderedRows;
+
+            if (belongsToCurrentBatch && tableChanged && rowCountReady) {
+                // Keep the best observed value for each row. A real date always beats an empty/dash value.
+                const previousByCode = new Map(bestRows.map(r => [r.procedure_code, r]));
+                bestRows = parsed.map(row => {
+                    const previous = previousByCode.get(row.procedure_code);
+                    const currentDate = normalizeLateDate(row.late_date_of_service);
+                    const previousDate = normalizeLateDate(previous?.late_date_of_service);
+                    if (!currentDate && previousDate) {
+                        return { ...row, late_date_of_service: previousDate };
+                    }
+                    return { ...row, late_date_of_service: currentDate || "—" };
+                });
+
+                if (signature !== lastSignature) {
+                    lastSignature = signature;
+                    stableSince = Date.now();
+                } else if (!stableSince) {
+                    stableSince = Date.now();
+                }
+
+                // React can paint the row first and populate Late Date Of Service afterwards.
+                // Require the CURRENT result table to remain unchanged for 4 seconds and never
+                // return earlier than 5 seconds after Search. This prevents the all-"—" capture.
+                const stableFor = Date.now() - stableSince;
+                const elapsed = Date.now() - started;
+                if (elapsed >= 5000 && stableFor >= 4000) {
+                    return bestRows;
+                }
+            } else {
+                // We are still looking at the previous batch or a partially replaced table.
+                stableSince = 0;
+            }
+        }
+
+        await sleep(250);
+    }
+
+    // Timeout fallback: return only rows that actually belong to this batch.
+    const fallback = scrapeProcedureTable().filter(r => wanted.has(r.procedure_code.toUpperCase()));
+    return fallback.length ? fallback : bestRows;
 }
 
 
@@ -507,24 +825,54 @@ async function crawlBenefitCoverage(extraCodes = "") {
 // TABLE & INPUT HELPERS
 // ══════════════════════════════════════════════════════════════════════════
 
+function normalizeLateDate(value) {
+    const text = clean(value);
+    if (!text || /^(?:—|-|N\/?A|NOT AVAILABLE)$/i.test(text)) return "";
+
+    // Portal currently returns MM/DD/YY (for example 02/02/26).
+    // Preserve the portal value instead of letting Date() reinterpret it.
+    const match = text.match(/\b(\d{1,2}\/\d{1,2}\/(?:\d{2}|\d{4}))\b/);
+    return match ? match[1] : text;
+}
+
+function getProcedureCell(row, headerId, fallbackIndex) {
+    // The MetLife table explicitly links each <td> to its column using headers="...".
+    // Prefer that semantic contract; numeric index is only a fallback.
+    const semanticCell = row.querySelector(`td[headers="${headerId}"]`);
+    if (semanticCell) return clean(semanticCell.textContent || semanticCell.innerText);
+
+    const cells = row.querySelectorAll("td");
+    return clean(cells[fallbackIndex]?.textContent || cells[fallbackIndex]?.innerText);
+}
+
 function scrapeProcedureTable() {
-    const rows = document.querySelectorAll("table tbody tr");
+    // Scope strictly to the Search Procedures result table. The page contains other tables.
+    const table = document.querySelector("#procedure-code-data-table table");
+    if (!table) return [];
+
+    const rows = table.querySelectorAll("tbody tr");
     if (!rows.length) return [];
+
     return Array.from(rows).map(row => {
-        const cells = row.querySelectorAll("td");
-        if (cells.length < 4) return null;
+        const procedureCode = getProcedureCell(row, "header-procedurecode", 0).toUpperCase();
+        if (!procedureCode) return null;
+
+        const lateDate = normalizeLateDate(
+            getProcedureCell(row, "header-latedateofservice", 4)
+        );
+
         return {
-            procedure_code: clean(cells[0]?.innerText),
-            description: clean(cells[1]?.innerText),
-            frequency_limit: clean(cells[2]?.innerText),
-            age_limit: clean(cells[3]?.innerText),
-            late_date_of_service: clean(cells[4]?.innerText) || "—",
-            deductible: clean(cells[5]?.innerText) || "N/A",
-            network_fee: clean(cells[6]?.innerText) || "N/A",
-            benefit_level: clean(cells[7]?.innerText) || "N/A",
-            patient_responsibility: clean(cells[8]?.innerText) || "N/A"
+            procedure_code: procedureCode,
+            description: getProcedureCell(row, "header-description", 1),
+            frequency_limit: getProcedureCell(row, "header-frequencylimit", 2),
+            age_limit: getProcedureCell(row, "header-agelimit", 3),
+            late_date_of_service: lateDate || "—",
+            deductible: getProcedureCell(row, "header-deductible", 5) || "N/A",
+            network_fee: getProcedureCell(row, "header-networkfee", 6) || "N/A",
+            benefit_level: getProcedureCell(row, "header-benefitlevel", 7) || "N/A",
+            patient_responsibility: getProcedureCell(row, "header-patientobligation", 8) || "N/A"
         };
-    }).filter(r => r && r.procedure_code);
+    }).filter(Boolean);
 }
 
 function findInputNearSearchButton() {

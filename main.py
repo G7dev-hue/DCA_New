@@ -16,7 +16,11 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional
-from new_plan_up import generate_new_plan_pdf
+from new_plan import (
+    generate_new_plan_pdf_with_filename,
+    get_new_plan_form,
+    get_new_plan_fields,
+)
 import uvicorn
 
 from compare_patients import match_insurance_plan
@@ -75,17 +79,24 @@ class NotesRequest(BaseModel):
 class PDFRequest(BaseModel):
     portal_data: dict
     denticon_data: dict
-
-class InsOverride(BaseModel):
-    insName:      Optional[str] = None
-    feeSchedule:  Optional[str] = None
-    providerNetworkStatus: Optional[str] = None
-    relationship: Optional[str] = None
+    ins_override: Optional[dict] = None
+    download_filename: Optional[str] = None
 
 class NewPlanRequest(BaseModel):
-    portal_data:   dict
+    portal_data: dict
     denticon_data: dict
-    ins_override:  Optional[InsOverride] = None   # ← carries modal values
+    # Keep this as a dict so the plan-override schema can evolve without
+    # requiring another main.py model change.
+    ins_override: Optional[dict] = None
+    download_filename: Optional[str] = None
+
+class NewPlanFormRequest(BaseModel):
+    portal_data: dict
+    denticon_data: dict
+    ins_override: Optional[dict] = None
+
+class NewPlanFieldsRequest(BaseModel):
+    portal_data: dict
 
 class ExclusionRequest(BaseModel):
     exclusions: list
@@ -98,8 +109,15 @@ class BlockNamesRequest(BaseModel):
 
 @app.get("/")
 def serve_ui():
-    """Serve the web UI (index.html) so it can be opened directly from the server."""
-    return FileResponse(os.path.join(BASE_DIR, "index.html"))
+    """Serve the web UI without caching stale download JavaScript."""
+    return FileResponse(
+        os.path.join(BASE_DIR, "index.html"),
+        headers={
+            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+            "Pragma": "no-cache",
+            "Expires": "0",
+        },
+    )
 
 
 @app.post("/api/match")
@@ -122,25 +140,28 @@ def generate_notes(req: NotesRequest):
 
 @app.post("/api/generate-new-plan-pdf")
 async def generate_new_plan_pdf_api(req: PDFRequest):
-
     if not req.portal_data or not req.denticon_data:
-        raise HTTPException(
-            status_code=400,
-            detail="Missing portal or denticon data"
-        )
+        raise HTTPException(status_code=400, detail="Missing portal or denticon data")
 
-    pdf_bytes = generate_new_plan_pdf(
+    pdf_bytes, filename = generate_new_plan_pdf_with_filename(
         req.portal_data,
-        req.denticon_data
+        req.denticon_data,
+        ins_override=req.ins_override,
+        download_filename=req.download_filename,
     )
 
     return Response(
         content=pdf_bytes,
         media_type="application/pdf",
         headers={
-            "Content-Disposition":
-            "attachment; filename=insurance_breakdown.pdf"
-        }
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "X-Download-Filename": filename,
+            "X-PDF-Filename-Version": "patient-carrier-v3",
+            "Access-Control-Expose-Headers": (
+                "Content-Disposition, X-Download-Filename, X-PDF-Filename-Version"
+            ),
+            "Cache-Control": "no-store",
+        },
     )
 
 @app.post("/api/parse-pdf")
@@ -159,7 +180,11 @@ async def parse_pdf_endpoint(file: UploadFile = File(...)):
     
 @app.get("/api/health")
 def health():
-    return {"status": "ok"}
+    return {
+        "status": "ok",
+        "pdf_filename_version": "patient-carrier-v3",
+        "main_file": os.path.abspath(__file__),
+    }
 
 
 # ── Appointment cleansing (SOP Steps 2–5) ──────────────────────────────────────
@@ -333,40 +358,64 @@ async def email_reports_api(
     }
 
 
-@app.post("/api/new-plan")
-def generate_new_plan(req: NewPlanRequest):
+@app.post("/api/new-plan/fields")
+def get_new_plan_fields_api(req: NewPlanFieldsRequest):
+    """Return only the lightweight New Plan editable-field schema.
+
+    No Denticon parsing, benefit extraction, procedure processing, or PDF work
+    happens here. The UI calls this eagerly after Portal upload and caches it.
     """
-    Generate and return an Insurance Plan Breakdown PDF.
-    Accepts the full raw JSONs from both portals + optional UI overrides.
+    if not req.portal_data:
+        raise HTTPException(status_code=400, detail="Missing portal data")
+    return get_new_plan_fields(req.portal_data)
+
+
+@app.post("/api/new-plan/form")
+def get_new_plan_form_api(req: NewPlanFormRequest):
+    """Return prepared values and editable-field metadata for the New Plan modal.
+
+    Denticon is mandatory and authoritative for Denticon-owned fields. Only the
+    remaining plan/operator fields are editable.
     """
     if not req.portal_data or not req.denticon_data:
         raise HTTPException(status_code=400, detail="Missing portal or denticon data")
 
-    # Convert InsOverride pydantic model → plain dict (or None)
-    override_dict = req.ins_override.dict() if req.ins_override else None
-
-    # Derive a safe filename from the patient name
-    patient_name = (
-        req.portal_data
-           .get('metlife_data', {})
-           .get('patient', {})
-           .get('name', 'NewPlan')
-           .replace(' ', '_')
-    )
-
-    pdf_bytes = generate_new_plan_pdf(
+    return get_new_plan_form(
         req.portal_data,
         req.denticon_data,
-        ins_override=override_dict,   # ← insName, feeSchedule, relationship applied inside
+        ins_override=req.ins_override,
+    )
+
+
+@app.post("/api/new-plan")
+def generate_new_plan(req: NewPlanRequest):
+    """
+    Generate and return an Insurance Plan Breakdown PDF.
+    Denticon is mandatory and supplies office/provider details. Plan/operator
+    overrides remain available through ``ins_override``.
+    """
+    if not req.portal_data or not req.denticon_data:
+        raise HTTPException(status_code=400, detail="Missing portal or denticon data")
+
+    pdf_bytes, filename = generate_new_plan_pdf_with_filename(
+        req.portal_data,
+        req.denticon_data,
+        ins_override=req.ins_override,
+        download_filename=req.download_filename,
     )
 
     return Response(
         content=pdf_bytes,
         media_type="application/pdf",
         headers={
-            "Content-Disposition": f'attachment; filename="Insurance_Plan_{patient_name}.pdf"',
-            "Access-Control-Expose-Headers": "Content-Disposition",
-        }
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "X-Download-Filename": filename,
+            "X-PDF-Filename-Version": "patient-carrier-v3",
+            "Access-Control-Expose-Headers": (
+                "Content-Disposition, X-Download-Filename, X-PDF-Filename-Version"
+            ),
+            "Cache-Control": "no-store",
+        },
     )
 
 if __name__ == "__main__":

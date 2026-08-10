@@ -3,13 +3,13 @@
 const clean = (s) => (s || "").trim().replace(/\s+/g, ' ');
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
-// CDT codes to search for - split into batches of 10
-const BATCH_1 = ["D0120", "D0180", "D0140", "D0150", "D0274", "D0210", "D0330", "D0220", "D0364", "D0431"];
-const BATCH_2 = ["D1110", "D1120", "D1206", "D1351", "D1510", "D2391", "D2740", "D2950", "D2962", "D6750"];
-const BATCH_3 = ["D5110", "D9110", "D9222", "D9230", "D9243", "D9310", "D9944", "D4341", "D4355", "D4346"];
-const BATCH_4 = ["D4910", "D4381", "D4260", "D4249", "D3310", "D3330", "D7140", "D7210", "D7240", "D7953"];
-const BATCH_5 = ["D6010", "D6056"];
-
+// CDT codes to search for - split into batches of 10. Additional Batch 6 is added for new plan PDF.
+const BATCH_1 = ["D0120", "D0180", "D0140", "D0150", "D0274", "D0210", "D0330", "D0220", "D0230", "D0240"];
+const BATCH_2 = ["D1110", "D1120", "D1206", "D1351", "D1510", "D2140", "D2331", "D2620", "D2740", "D2950"];
+const BATCH_3 = ["D3310", "D3330", "D3347", "D4260", "D4341", "D4355", "D4381", "D4910", "D5110", "D7953"];
+const BATCH_4 = ["D5740", "D6010", "D6056", "D6065", "D6194", "D6245", "D7140", "D7240", "D7210", "D6750"];
+const BATCH_5 = ["D7259", "D8010", "D8080", "D8090", "D9110", "D9222", "D9230", "D9243", "D9310", "D4346"];
+const BATCH_6 = ["D9944", "D0364", "D0431", "D2391", "D2962", "D4249"];
 console.log("Delta Dental scraper V2.0 initialized - Ready to audit benefits");
 
 // ══════════════════════════════════════════════════════════════════════════
@@ -387,48 +387,80 @@ function scrapePlanProvisionsTab() {
 // ══════════════════════════════════════════════════════════════════════════
 
 function scrapeWaitingPeriodsTab() {
-    /**
-     * Scrape waiting periods table - extract treatment types and their procedure codes
-     */
-    const waitingTable = document.querySelector('[data-testid="waitingPeriodsTable"]');
-    if (!waitingTable) return [];
-    
-    const rows = waitingTable.querySelectorAll('tbody tr');
-    const waitingPeriods = [];
-    
-    rows.forEach(row => {
-        const thCell = row.querySelector('th');
-        const tdCells = row.querySelectorAll('td');
-        
-        if (thCell && tdCells.length >= 2) {
-            // Extract treatment types and their procedure codes from the th cell
-            const treatmentData = [];
-            const divGroups = thCell.querySelectorAll('.mb-2');
-            
-            divGroups.forEach(divGroup => {
-                const paragraphs = divGroup.querySelectorAll('p');
-                if (paragraphs.length >= 2) {
-                    const treatmentType = clean(paragraphs[0]?.innerText) || "";
-                    const procedureCodes = clean(paragraphs[1]?.innerText) || "";
-                    
-                    if (treatmentType && procedureCodes) {
-                        treatmentData.push({
-                            treatment_type: treatmentType,
-                            procedure_codes: procedureCodes
-                        });
-                    }
+    const table =
+        document.querySelector('[data-testid="waitingPeriodsTable"]') ||
+        Array.from(document.querySelectorAll("table")).find(t =>
+            /Waiting period begins/i.test(t.innerText) &&
+            /Waiting period ends/i.test(t.innerText)
+        );
+
+    if (!table) {
+        return {
+            rows: [],
+            note: "Waiting periods table not found"
+        };
+    }
+
+    const results = [];
+
+    table.querySelectorAll("tbody tr").forEach(row => {
+        const headerCell = row.querySelector("th");
+        const cells = row.querySelectorAll("td");
+
+        if (!headerCell || cells.length < 2) return;
+
+        const treatmentGroups = [];
+
+        let current = null;
+
+        Array.from(headerCell.children).forEach(el => {
+            const text = clean(el.innerText);
+            if (!text) return;
+
+            if (/^D\d{4}/i.test(text)) {
+                if (current) {
+                    current.procedure_codes = text;
                 }
-            });
-            
-            waitingPeriods.push({
-                treatments_and_procedures: treatmentData,
-                waiting_period_begins: clean(tdCells[0]?.innerText) || "N/A",
-                waiting_period_ends: clean(tdCells[1]?.innerText) || "N/A"
-            });
+            } else {
+                current = {
+                    treatment_type: text,
+                    procedure_codes: ""
+                };
+                treatmentGroups.push(current);
+            }
+        });
+
+        // Fallback if there are no child elements
+        if (treatmentGroups.length === 0) {
+            const lines = headerCell.innerText
+                .split("\n")
+                .map(clean)
+                .filter(Boolean);
+
+            for (let i = 0; i < lines.length; i++) {
+                if (/^D\d{4}/i.test(lines[i])) continue;
+
+                treatmentGroups.push({
+                    treatment_type: lines[i],
+                    procedure_codes:
+                        i + 1 < lines.length &&
+                        /^D\d{4}/i.test(lines[i + 1])
+                            ? lines[++i]
+                            : ""
+                });
+            }
         }
+
+        results.push({
+            treatments_and_procedures: treatmentGroups,
+            waiting_period_begins: clean(cells[0].innerText),
+            waiting_period_ends: clean(cells[1].innerText)
+        });
     });
-    
-    return waitingPeriods;
+
+    return {
+        rows: results
+    };
 }
 
 // ══════════════════════════════════════════════════════════════════════════
@@ -780,7 +812,7 @@ function parseTableContent(table, code, cardEl) {
     };
 }
 async function scrapeBenefitsSearchTab() {
-    const batches = [BATCH_1, BATCH_2, BATCH_3, BATCH_4, BATCH_5];
+    const batches = [BATCH_1, BATCH_2, BATCH_3, BATCH_4, BATCH_5, BATCH_6];
     const allResults = [];
 
     for (let i = 0; i < batches.length; i++) {
@@ -885,9 +917,31 @@ async function runDeltaDentalCrawl() {
 
         // BENEFITS SEARCH TAB
         console.log("Scraping Benefits Search tab...");
-        await clickTab("benefitsSearchTab");
-        auditData.tabs.benefits_search = await scrapeBenefitsSearchTab();
+    await clickTab("benefitsSearchTab");
+// Wait until search UI is ready
+    let input = null;
+    let button = null;
 
+    const start = Date.now();
+
+    while (Date.now() - start < 10000) {
+    input = document.querySelector('[data-testid="autocompleteSearchInput"]');
+    button = document.querySelector('[data-testid="autocompleteSearchButton"]');
+
+    if (
+        input &&
+        button &&
+        !input.disabled &&
+        input.offsetParent !== null
+    ) {
+        break;
+    }
+
+    await sleep(250);
+}
+// Small buffer for React rendering
+await sleep(1500);
+auditData.tabs.benefits_search = await scrapeBenefitsSearchTab();
         // TREATMENT HISTORY TAB
         console.log("Scraping Treatment History tab...");
         const historyTabClicked = await clickTab("treatmentHistoryTab");
